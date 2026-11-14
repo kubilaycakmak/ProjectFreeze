@@ -44,6 +44,15 @@ jobs:
       - run: npm run build:native
       - run: node scripts/reproducible.js
       - run: npm test
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        if: matrix.runner == 'windows-2025' && matrix.node == 24
+        with:
+          python-version: '3.12'
+      - name: Exercise the full-screen menu in Windows ConPTY
+        if: matrix.runner == 'windows-2025' && matrix.node == 24
+        run: |
+          python -m pip install --disable-pip-version-check --only-binary=:all: pywinpty==3.1.2
+          python -X utf8 test/terminal-windows.py
       - name: Verify native LaunchAgent control
         if: runner.os == 'macOS' && matrix.runner == 'macos-15'
         run: PF_TEST_LAUNCHD=1 node --test test/supervisors.test.js

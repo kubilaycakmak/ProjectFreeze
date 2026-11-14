@@ -5,14 +5,15 @@ ProjectFreeze discovers and manages developer workloads on the local machine. Op
 The current version is a development candidate. Install a verified tarball from the GitHub Actions run or build it from source. The proposed registry command is `npx @kubilaycakmak/projectfreeze@latest` after publication.
 
 ```sh
-npm install --global /path/to/kubilaycakmak-projectfreeze-0.1.0-dev.1.tgz
+npm install --global /path/to/kubilaycakmak-projectfreeze-0.1.0-dev.2.tgz
 projectfreeze
 ```
 
-From a terminal, press Enter to inspect a project, Right to expand its resources, and `f` to review a freeze. ProjectFreeze asks you to review the candidate PIDs when ownership is unclear. Use Space to select multiple registered projects. Press `?` for all shortcuts or `q` to disconnect.
+In a terminal, `projectfreeze` and `projectfreeze menu` open the live interface on Windows, macOS, and Linux. Use the arrow keys to select a project, Enter to inspect it, and Tab to switch between Projects, TCP listeners, and History. Use `/` to search, `z` for Sleep, `w` for Wake, and `q` to disconnect. Press `?` for the full key reference. ProjectFreeze asks you to review candidate processes before adoption. `projectfreeze menu --plain` provides a line-driven fallback.
 
 ```sh
 projectfreeze discover --json
+projectfreeze listeners
 projectfreeze inspect PROJECT
 projectfreeze freeze PROJECT
 projectfreeze resume PROJECT

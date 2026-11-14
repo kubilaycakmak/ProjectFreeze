@@ -5,6 +5,8 @@ With no arguments, a terminal session opens the interactive interface. A redirec
 | Command | Behavior |
 | --- | --- |
 | `list`, `discover`, `inspect PROJECT` | Report registered projects, candidate projects, and scoped observations. |
+| `menu`, `menu --plain` | Open the live keyboard interface or its line-driven fallback. |
+| `listeners` | List TCP endpoints and PIDs for locally observable processes. Unassigned entries are read-only. |
 | `adopt --cwd DIR --member PID@BIRTH@BOOT --confirm` | Approve exact identities from current discovery. Repeat `--member` and `--exclude` as needed. `--recipe FILE` supplies restart settings. |
 | `run --cwd DIR -- EXECUTABLE ARG...` | Launch literal arguments. Use a fully qualified executable or an absolute PATH entry. |
 | `run --recipe FILE` | Launch a reviewed JSON recipe. |
@@ -18,6 +20,12 @@ With no arguments, a terminal session opens the interactive interface. A redirec
 | `mcp` | Run the local MCP stdio server. |
 
 Mutating commands wait for an operation result unless `--detach` is given. The operation has a UUID, action, project list, status, UTC timestamps, pending step, and per-resource outcomes. Closing the terminal or interrupting the CLI disconnects the client. `cancel ID` requests cancellation before the next resource boundary. Completed effects and in-flight native calls can survive cancellation.
+
+The live menu rescans on entry and periodically. Tab or Left/Right switches between Projects, TCP listeners, and History. Arrow keys and Page Up/Down move the selection or scroll details. Enter opens the selection or confirms a preview. Escape goes back or cancels. Search with `/` and use Space to select multiple projects. The TCP listener list comes from local OS tables and sends no network probes. Discovered processes need explicit ownership review before control.
+
+## Test Sleep and Wake
+
+Use the included `examples/stream-test.mjs` to create a launch recipe and see the process identity at the client. From a dedicated test directory, run `node /path/to/stream-test.mjs --recipe stream.recipe.json 8788`. Press `l`, enter the recipe path, and confirm with Enter. In another terminal run `curl -N http://127.0.0.1:8788/stream` (`curl.exe` on Windows). Select the project, press `z`, and confirm. The stream ends and the listener disappears. Press `w`, confirm, and reconnect with curl to see the new PID. The fixture includes a graceful shutdown command. Choose an unused port if `8788` is occupied.
 
 | Exit code | Meaning |
 | --- | --- |

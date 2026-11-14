@@ -46,7 +46,7 @@ export class Engine {
       this.current.cancelled = true;
       return { id: input.id, cancellation: 'requested' };
     }
-    if (action === 'list' || action === 'discover' || action === 'inspect') return this.inspect(action, input);
+    if (['list', 'discover', 'inspect', 'listeners'].includes(action)) return this.inspect(action, input);
     if (!changes.has(action)) throw new Fault('USAGE', 'Unknown operation.');
     while (this.tracking) await delay(25);
     if (this.current || this.closing) throw new Fault('BUSY', 'An operation is running or the daemon is shutting down.');
@@ -68,11 +68,19 @@ export class Engine {
     for (const project of projects) if (project.root) await this.track(project, rows).catch(() => {});
     const discovered = await candidates(projects, rows);
     const observed = discovered.map(group => ({ ...group, processes: group.members, processCount: group.members.length,
-      ports: group.members.flatMap(member => member.ports), dependencies: [], containers: [], systemd: [], supervisors: [] }));
+      ports: group.members.flatMap(member => member.ports), dependencies: [], containers: [], systemd: [], supervisors: [], restart: { configured: false } }));
     if (action === 'discover') return observed;
     const managed = projects.map(project => summarize(project, rows, observed.find(d => d.id === project.id)));
     const combined = [...managed, ...observed.filter(candidate => !projects.some(p => p.id === candidate.id))];
     if (action === 'list') return combined;
+    if (action === 'listeners') {
+      const association = new Map(observed.flatMap(project => project.processes.map(row => [row.pid, { project: project.id, name: project.name, scope: 'observed' }])));
+      for (const project of managed) {
+        for (const row of project.processes) association.set(row.pid, { project: project.id, name: project.name, scope: 'managed' });
+      }
+      return rows.flatMap(row => row.ports.map(port => ({ ...port, pid: row.pid, image: row.image, scope: 'unassigned', ...association.get(row.pid) })))
+        .sort((a, b) => a.port - b.port || a.address.localeCompare(b.address) || a.pid - b.pid);
+    }
     const project = combined.find(p => p.id === input.id);
     if (!project) throw new Fault('NOT_FOUND', 'Unknown project ID.');
     const registered = projects.find(row => row.id === input.id);

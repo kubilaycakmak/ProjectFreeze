@@ -14,7 +14,6 @@ export const linux = process.platform === 'linux';
 const name = `projectfreeze-${process.platform}-${process.arch}${windows ? '.exe' : ''}`;
 export const helper = fileURLToPath(new URL(`../helpers/${name}`, import.meta.url));
 const cliPath = fileURLToPath(new URL('../bin/projectfreeze.js', import.meta.url));
-const sys = windows ? join(process.env.SystemRoot, 'System32') : '/usr/bin';
 const samples = new Map();
 const knownStates = new Set(['R', 'S', 'D', 'T', 't', 'I', 'M', '?', 'P', 'Z', 'X']);
 const ignorePids = new Set([process.pid]);
@@ -140,10 +139,10 @@ async function nonLinuxRows(boot, full) {
   if (!full) return rows;
   const byPid = new Map(rows.map(row => [row.pid, row]));
   if (windows) {
-    const net = await command(join(sys, 'netstat.exe'), ['-ano', '-p', 'tcp']).catch(() => '');
-    for (const line of net.split('\n')) {
-      const match = line.match(/^\s*TCP\s+(\S+):(\d+)\s+\S+\s+LISTENING\s+(\d+)\s*$/);
-      if (match) byPid.get(+match[3])?.ports.push({ address: match[1].replace(/^\[|\]$/g, ''), port: +match[2] });
+    const net = await command(helper, ['listeners']);
+    for (const line of net.trimEnd().split(/\r?\n/).filter(Boolean)) {
+      const [pid, address, port] = line.split('\t');
+      byPid.get(+pid)?.ports.push({ address, port: +port });
     }
   } else {
     const sockets = await command('/usr/sbin/lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-Fpn']).catch(() => '');
