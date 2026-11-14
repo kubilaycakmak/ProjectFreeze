@@ -1,6 +1,7 @@
 import { emitKeypressEvents } from 'node:readline';
 import { readFile } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
+import manifest from '../package.json' with { type: 'json' };
 import { problem } from './errors.js';
 import { request, waitOperation } from './ipc.js';
 import { identity, key as processKey } from './platform.js';
@@ -289,7 +290,7 @@ export async function interactive() {
     const tabs = titles.map((title, index) => index === tab ? `[${title}]` : title).join('   ');
     const budget = Math.max(1, rows - 5);
     const body = dialog || detail ? panelLines(budget) : listLines(span, budget);
-    const heading = [{ text: ' ProjectFreeze ', tone: '1;36' }, { text: tabs, tone: '1' }];
+    const heading = [{ text: ` ProjectFreeze ${manifest.version} `, tone: '1;36' }, { text: tabs, tone: '1' }];
     const result = operation ? `${operation.action}  ${operation.status ?? 'starting'}  ${operation.outcomes?.length ?? 0} result(s)  ${operation.pending ?? ''}` : status;
     const controls = dialog?.kind === 'help' ? 'Esc Back   ? Close help' : operation ? 'x Cancel operation   q Detach' : dialog ? 'Esc Cancel   q Quit' : detail ?
       '↑↓ Scroll   Esc Back   Tab View   ? Help   q Quit' : 'Tab View   ↑↓ Move   Enter Inspect   / Search   l Launch   ? Help   q Quit';

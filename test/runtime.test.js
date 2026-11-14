@@ -9,6 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import manifest from '../package.json' with { type: 'json' };
 
 const exec = promisify(execFile);
 const bin = fileURLToPath(new URL('../bin/projectfreeze.js', import.meta.url));
@@ -55,6 +56,7 @@ test('real ownership, lifecycle, IPC authentication and MCP', { timeout: 130000 
     await stopDaemon();
     await rm(base, { recursive: true, force: true, maxRetries: 5 });
   });
+  assert.deepEqual(await run(['--version']), { schemaVersion: 1, ok: true, data: { version: manifest.version } });
   for (const dir of [project, foreign]) {
     await mkdir(dir);
     await writeFile(join(dir, 'package.json'), '{}');
@@ -128,7 +130,9 @@ test('real ownership, lifecycle, IPC authentication and MCP', { timeout: 130000 
   const send = (id, method, params) => child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
   try {
     send(1, 'initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'native-test', version: '1' } });
-    assert.equal((await eventually(() => messages.find(m => m.id === 1), 'initialize MCP')).result.protocolVersion, '2025-11-25');
+    const { result: initialization } = await eventually(() => messages.find(m => m.id === 1), 'initialize MCP');
+    assert.equal(initialization.protocolVersion, '2025-11-25');
+    assert.equal(initialization.serverInfo.version, manifest.version);
     send(undefined, 'notifications/initialized');
     send(2, 'tools/list');
     assert.ok((await eventually(() => messages.find(m => m.id === 2), 'list MCP tools')).result.tools.some(tool => tool.name === 'freeze'));

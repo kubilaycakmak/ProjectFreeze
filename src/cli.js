@@ -1,12 +1,14 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import manifest from '../package.json' with { type: 'json' };
 import { Fault, exitCode, problem } from './errors.js';
 import { daemon, request, waitOperation } from './ipc.js';
 
 const usage = `ProjectFreeze
 
   projectfreeze                         Open the interactive terminal
+  projectfreeze --version               Print the installed version
   projectfreeze menu                    Open the interactive terminal
   projectfreeze menu --plain            Use line input and text output
   projectfreeze list | discover | listeners | ports | services | history
@@ -33,7 +35,8 @@ const terminalText = value => String(value).replace(/[\p{Cc}\p{Cf}]/gu, ' ');
 const opts = {
   json: { type: 'boolean' }, plain: { type: 'boolean' }, detach: { type: 'boolean' }, force: { type: 'boolean' }, confirm: { type: 'boolean' },
   cwd: { type: 'string' }, recipe: { type: 'string' }, member: { type: 'string', multiple: true },
-  exclude: { type: 'string', multiple: true }, backend: { type: 'string' }, checkpoint: { type: 'string' }, help: { type: 'boolean', short: 'h' }
+  exclude: { type: 'string', multiple: true }, backend: { type: 'string' }, checkpoint: { type: 'string' },
+  help: { type: 'boolean', short: 'h' }, version: { type: 'boolean' }
 };
 
 function target(raw) {
@@ -61,6 +64,11 @@ export async function main(args) {
     json = Boolean(values.json);
     let [action, ...ids] = positionals;
     if (values.help || action === 'help') { process.stdout.write(usage); return; }
+    if (values.version) {
+      const version = manifest.version;
+      process.stdout.write(`${json ? JSON.stringify({ schemaVersion: 1, ok: true, data: { version } }) : version}\n`);
+      return;
+    }
     if (action === 'mcp') { await (await import('./mcp.js')).serve(); return; }
     if (action === '_daemon' || (action === 'daemon' && ids[0] === 'foreground')) { await daemon(); return; }
     const terminal = process.stdin.isTTY && process.stdout.isTTY && process.env.TERM !== 'dumb';
