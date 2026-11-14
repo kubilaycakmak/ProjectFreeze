@@ -3,6 +3,7 @@ import { createReadStream } from 'node:fs';
 import { lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { arch, release } from 'node:os';
 import { isAbsolute, join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { Fault } from './errors.js';
 import { bootId, command, executable, linux } from './platform.js';
 
@@ -160,9 +161,25 @@ export async function restore(state, project, id, targets, mark) {
     const images = join(info.DockerRootDir, 'containers', container.Id, 'checkpoints', id);
     if (JSON.stringify(await hashFiles(images)) !== JSON.stringify(manifest.files)) throw new Fault('DENIED', 'Checkpoint integrity verification failed.');
     mark(id);
-    await docker(['start', '--checkpoint', id, manifest.container], { timeout: 120000 });
-    if (!(await inspectDocker(manifest.container)).State.Running) throw new Fault('PARTIAL', 'Restored container is not running.');
-    return undefined;
+    const collision = /^failed to upload checkpoint to containerd: commit failed: content sha256:[a-f0-9]{64}: already exists$/;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let failure;
+      try { await docker(['start', '--checkpoint', id, manifest.container], { timeout: 120000 }); }
+      catch (error) { failure = error; }
+      const { State: state } = await inspectDocker(manifest.container);
+      if (state.Running && !state.Restarting && !state.Paused) return undefined;
+      if (!failure || !collision.test(state.Error ?? '') || attempt === 2) {
+        throw new Fault('PARTIAL', collision.test(state.Error ?? '')
+          ? 'Docker restore hit a containerd content collision. The checkpoint is retained.'
+          : 'Docker did not verify a running restored container. The checkpoint is retained. Inspect the local Docker container state.');
+      }
+      await delay(1500);
+      const current = await inspectDocker(manifest.container);
+      if (current.State.Running || current.State.Restarting || current.State.Paused || current.State.Dead || current.State.Pid) {
+        throw new Fault('PARTIAL', 'Docker container state changed after a failed restore. Inspect it before retrying.');
+      }
+      mark(id);
+    }
   }
   if (manifest.backend !== 'criu') throw new Fault('DENIED', 'Unknown checkpoint backend.');
   if (JSON.stringify(await hashFiles(path)) !== JSON.stringify(manifest.files)) throw new Fault('DENIED', 'Checkpoint integrity verification failed.');
