@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 NODE = shutil.which('node.exe')
 CLI = str(ROOT / 'bin' / 'projectfreeze.js')
 FIXTURE = str(ROOT / 'examples' / 'stream-test.mjs')
+VERSION = json.loads((ROOT / 'package.json').read_text(encoding='utf-8'))['version']
 
 
 def eventually(check, message, timeout=25):
@@ -83,6 +84,7 @@ def main():
 
             threading.Thread(target=read_terminal, daemon=True).start()
             expect('[Projects]')
+            expect(f'ProjectFreeze {VERSION}')
             expect(cwd.name)
             send('?', 'Keyboard shortcuts')
             expect('Navigation')

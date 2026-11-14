@@ -6,6 +6,7 @@ With no arguments, a terminal session opens the interactive interface. A redirec
 | --- | --- |
 | `list`, `discover`, `inspect PROJECT` | Report registered projects, candidate projects, and scoped observations. |
 | `menu`, `menu --plain` | Open the live keyboard interface or its line-driven fallback. |
+| `--version` | Print the installed package version. The live menu shows the same version in its header. |
 | `listeners` | List TCP endpoints and PIDs for locally observable processes. Unassigned entries are read-only. |
 | `ports` | List local TCP listeners and bound UDP sockets. Reports a PID when ownership is available. |
 | `services` | List running services visible to the local Windows SCM, systemd system and user managers, or the current macOS launchd domain. |

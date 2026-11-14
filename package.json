@@ -1,6 +1,6 @@
 {
   "name": "@kubilaycakmak/projectfreeze",
-  "version": "0.1.0-dev.2",
+  "version": "0.1.0-dev.3",
   "description": "Local management for developer project execution environments",
   "type": "module",
   "bin": { "projectfreeze": "bin/projectfreeze.js" },
