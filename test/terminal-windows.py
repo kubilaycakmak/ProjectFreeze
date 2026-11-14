@@ -32,7 +32,7 @@ def eventually(check, message, timeout=25):
 
 
 def main():
-    with tempfile.TemporaryDirectory(prefix='pf-terminal-') as directory, socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+    with tempfile.TemporaryDirectory(prefix='pf-terminal-x-') as directory, socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
         cwd = Path(directory).resolve()
         recipe = cwd / 'stream.json'
         env = dict(os.environ, PROJECTFREEZE_HOME=str(cwd / 'state'), NO_COLOR='1')

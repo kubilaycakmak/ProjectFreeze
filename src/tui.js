@@ -558,8 +558,9 @@ export async function interactive() {
   function keypress(str, key) {
     if (ended) return;
     if (handling && !(key?.ctrl && key.name === 'c') && !(operation && ['x', 'q'].includes(key?.name))) return;
-    const locked = !handling && (key?.name === 'return' || key?.name === 'x' ||
-      (!dialog && ['a', 'f', 'k'].includes(key?.name)));
+    const name = key?.name;
+    const locked = !handling && (name === 'return' || (!dialog &&
+      (['a', 'f', 'k'].includes(name) || (operation?.id && name === 'x'))));
     if (locked) handling = true;
     void handle(str, key).catch(error => { status = problem(error).message; }).finally(() => {
       if (locked) handling = false;
