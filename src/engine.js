@@ -18,7 +18,8 @@ const alive = (rows, target) => rows.find(row => matches(row, target) && !stoppe
 const visible = (rows, project) => rows.filter(row => !stopped(row) && project.members.some(target => matches(target, row)));
 const runningService = (containers, units) => containers.some(target => !target.shared && target.running) ||
   units.some(unit => !unit.shared && !unit.timer && unit.state.ActiveState === 'active');
-const newProject = (id, cwd) => ({ id, cwd, name: basename(cwd), members: [], excluded: [], state: 'registered' });
+const newProject = (id, cwd, instance) => ({ id, cwd, instance, name: instance ? `${basename(cwd)} / ${instance}` : basename(cwd),
+  members: [], excluded: [], state: 'registered' });
 const changes = new Set(['adopt', 'run', 'freeze', 'resume', 'sleep', 'kill', 'wake', 'checkpoint', 'restore', 'reconcile']);
 
 async function listening({ address, port }) {
@@ -74,7 +75,8 @@ export class Engine {
     const observed = discovered.map(group => ({ ...group, processes: group.members, processCount: group.members.length,
       ports: group.members.flatMap(member => member.ports), dependencies: [], containers: [], systemd: [], supervisors: [], restart: { configured: false } }));
     if (action === 'discover') return observed;
-    const managed = projects.map(project => summarize(project, rows, observed.find(d => d.id === project.id)));
+    const discoveredById = new Map(observed.map(row => [row.id, row]));
+    const managed = projects.map(project => summarize(project, rows, discoveredById.get(projectId(project.cwd))));
     const combined = [...managed, ...observed.filter(candidate => !projects.some(p => p.id === candidate.id))];
     if (action === 'list') return combined;
     if (action === 'listeners' || action === 'ports') {
@@ -91,9 +93,13 @@ export class Engine {
     const project = combined.find(p => p.id === input.id);
     if (!project) throw new Fault('NOT_FOUND', 'Unknown project ID.');
     const registered = projects.find(row => row.id === input.id);
+    const containers = project.containers.map(target => ({ ...target, shared: target.shared || projects.some(other =>
+      other.id !== project.id && other.recipe?.containers?.some(policy => policy.project === target.project && policy.service === target.service)) }));
+    const systemd = project.systemd.map(target => ({ ...target, shared: target.shared || projects.some(other =>
+      other.id !== project.id && other.recipe?.systemd?.some(policy => policy.unit === target.unit)) }));
     const supervisors = registered ? await observeSupervisors(registered, projects, rows).then(targets => targets.map(({ key, kind, name, state, pid, enabled, active, shared }) =>
       ({ key, kind, name, state, pid, enabled, active, shared })), error => project.supervisors.map(target => ({ ...target, error: problem(error) }))) : [];
-    return { ...project, supervisors, candidates: observed.find(candidate => candidate.id === input.id)?.processes ?? [],
+    return { ...project, containers, systemd, supervisors, candidates: discoveredById.get(projectId(project.cwd))?.processes ?? [],
       operations: this.store.history().filter(op => op.projects.includes(input.id)).slice(0, 12) };
   }
 
@@ -172,15 +178,22 @@ export class Engine {
 
   async adopt(job, input) {
     const cwd = await directory(input.cwd);
-    const id = projectId(cwd);
     const projects = this.store.projects();
-    const project = projects.find(p => p.id === id) ?? newProject(id, cwd);
+    const configuration = input.recipe ? await recipe({ ...input.recipe, cwd }) : undefined;
+    const selected = input.id === undefined ? undefined : projects.find(project => project.id === input.id);
+    if (input.id !== undefined && (!selected || selected.cwd !== cwd ||
+        (configuration?.instance !== undefined && configuration.instance !== selected.instance))) {
+      throw new Fault('DENIED', 'The selected project does not match the reviewed directory and workload instance.');
+    }
+    const instance = selected ? selected.instance : configuration?.instance;
+    const id = projectId(cwd, instance);
+    const project = selected ?? projects.find(p => p.id === id) ?? newProject(id, cwd, instance);
     if (!['registered', 'exited', 'running', 'adopted'].includes(project.state)) throw new Fault('BUSY', 'Reconcile the current project state before changing ownership.');
     if (input.confirm !== true || !Array.isArray(input.members) || !input.members.length || input.members.length > 256) {
       throw new Fault('USAGE', 'Inspect discovery and explicitly approve the listed PID@creation@boot identities.');
     }
     const rows = await scan();
-    const group = (await candidates(projects, rows)).find(candidate => candidate.id === id);
+    const group = (await candidates(projects, rows)).find(candidate => candidate.id === projectId(cwd));
     const excluded = Array.isArray(input.exclude) ? input.exclude : [];
     for (const target of [...input.members, ...excluded]) {
       if (!group?.members.some(row => matches(row, target)) && !project.members.some(row => matches(row, target))) {
@@ -194,8 +207,8 @@ export class Engine {
     project.members = project.members.filter(target => !excluded.some(item => matches(item, target)));
     project.excluded.push(...excluded.map(identity));
     project.state = project.root ? 'running' : 'adopted';
-    if (input.recipe) {
-      project.recipe = await recipe({ ...input.recipe, cwd });
+    if (configuration) {
+      project.recipe = { ...configuration, instance };
       await supervisorTargets(project, projects, true);
     }
     job.op.projects = [id];
@@ -204,8 +217,9 @@ export class Engine {
 
   async run(job, input) {
     const configuration = await recipe(input.recipe);
-    const id = projectId(configuration.cwd);
-    const project = this.store.projects().find(p => p.id === id) ?? newProject(id, configuration.cwd);
+    const { cwd, instance } = configuration;
+    const id = projectId(cwd, instance);
+    const project = this.store.projects().find(p => p.id === id) ?? newProject(id, cwd, instance);
     if (project.uncertainEffect || !['registered', 'exited', 'sleeping'].includes(project.state)) {
       throw new Fault('BUSY', 'This project already owns a workload or has an interrupted effect. Inspect and reconcile before launching another.');
     }
@@ -721,10 +735,10 @@ export class Engine {
     if (visible(await scan(false), project).length) throw new Fault('BUSY', 'Stop the active workload before restoring a checkpoint.');
     if (project.recipe?.ready && await listening(project.recipe.ready)) throw new Fault('BUSY', 'The original readiness port is already active.');
     const targets = await composeTargets(project, this.store.projects());
-    project.state = 'restoring';
-    const pid = await restore(this.state, project, input.checkpoint, targets, id => {
+    const pid = await restore(this.state, project, input.checkpoint, targets, (id, effect) => {
       this.check(job);
-      this.pending(job, project, `restore checkpoint ${id}`);
+      project.state = 'restoring';
+      this.pending(job, project, `restore checkpoint ${id}`, { kind: 'restore', ...effect });
     });
     if (pid) {
       const rows = await scan(false);
@@ -734,6 +748,7 @@ export class Engine {
       project.members = [{ ...identity(root), source: 'launched' }];
       project.cgroup = undefined;
       await this.track(project, rows);
+      this.pending(job, project, 'verify restored workload', { ...project.uncertainEffect, identity: project.root });
       await this.ready(job, project);
     }
     project.state = 'running';
@@ -756,6 +771,19 @@ export class Engine {
       if (effect?.kind === 'launch') {
         if (live.length) await this.ready(job, project);
         delete project.uncertainEffect;
+      }
+      if (effect?.kind === 'restore') {
+        if (effect.boot !== await bootId()) delete project.uncertainEffect;
+        else if (effect.backend === 'criu' && effect.identity && live.some(row => matches(row, effect.identity))) {
+          await this.ready(job, project);
+          delete project.uncertainEffect;
+        } else if (effect.backend === 'docker' && containers.some(target =>
+          !target.shared && target.id === effect.container && target.running && !target.paused)) delete project.uncertainEffect;
+        if (project.uncertainEffect) {
+          project.state = 'partial';
+          this.record(job, project, project.id, 'failed', new Fault('PARTIAL', 'The interrupted restore could not verify its target. Review the operation and checkpoint before restarting.'));
+          continue;
+        }
       }
       if (effect?.kind === 'process') {
         const row = alive(rows, effect.identity);

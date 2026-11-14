@@ -14,8 +14,10 @@ export async function directory(value) {
   } catch { throw new Fault('USAGE', 'Provide an existing project directory.'); }
 }
 
-export function projectId(path) {
-  return `p-${createHash('sha256').update(path).digest('hex').slice(0, 16)}`;
+export function projectId(path, instance) {
+  const hash = createHash('sha256').update(path);
+  if (instance !== undefined) hash.update('\0').update(instance);
+  return `p-${hash.digest('hex').slice(0, 16)}`;
 }
 
 function within(parent, child) {
@@ -97,7 +99,7 @@ export function summarize(project, rows, discovered) {
   for (const p of processes) {
     for (const port of p.ports) owners.set(`${port.address}/${port.port}`, port);
   }
-  return { id: project.id, name: project.name, cwd: project.cwd, state: project.state,
+  return { id: project.id, name: project.name, cwd: project.cwd, instance: project.instance, state: project.state,
     confidence: project.members.length ? 'reviewed-or-contained' : 'registered',
     processes, processCount: processes.length, ports: [...owners.values()],
     rssSum: processes.some(p => p.rss !== undefined) ? processes.reduce((n, p) => n + (p.rss ?? 0), 0) : undefined,

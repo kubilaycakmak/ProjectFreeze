@@ -46,6 +46,64 @@ async function until(check, reason, timeout = 17000) {
   assert.fail(reason);
 }
 
+test('named workloads sharing a directory keep distinct ownership and listeners', { timeout: 150000 }, async t => {
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), 'pf-instances-')));
+  const env = { ...process.env, PROJECTFREEZE_HOME: join(cwd, 'state') };
+  async function run(...args) {
+    const result = await exec(process.execPath, [bin, '--json', ...args], { cwd, env, windowsHide: true, timeout: 35000 })
+      .catch(error => error);
+    return JSON.parse(result.stdout);
+  }
+  t.after(async () => {
+    const list = await run('list').catch(() => ({}));
+    for (const row of (list.data ?? []).filter(row => row.cwd === cwd && row.instance && row.processCount)) {
+      if (row.state === 'frozen') await run('resume', row.id);
+      await run('sleep', row.id);
+    }
+    await run('daemon', 'stop');
+    await delay(450);
+    await rm(cwd, { recursive: true, force: true, maxRetries: 5 });
+  });
+  const server = await Promise.all([reserve('127.0.0.1'), reserve('127.0.0.1')]);
+  const [apiPort, workerPort] = server.map(listener => listener.address().port);
+  await Promise.all(server.map(listener => new Promise(resolve => listener.close(resolve))));
+  const script = join(cwd, 'stream.mjs');
+  await copyFile(fixture, script);
+  await writeFile(join(cwd, 'package.json'), '{}');
+  async function launch(instance, port) {
+    const marker = join(cwd, `${instance}.stop`);
+    const recipe = join(cwd, `${instance}.json`);
+    await writeFile(recipe, JSON.stringify({ cwd, instance, argv: [process.execPath, script, String(port), marker],
+      stop: [process.execPath, script, '--stop', marker], ready: { address: '127.0.0.1', port } }));
+    return run('run', '--recipe', recipe);
+  }
+  const api = await launch('api', apiPort);
+  const worker = await launch('worker', workerPort);
+  assert.equal(api.ok, true, JSON.stringify(api));
+  assert.equal(worker.ok, true, JSON.stringify(worker));
+  const [apiId] = api.data.projects;
+  const [workerId] = worker.data.projects;
+  assert.notEqual(apiId, workerId);
+  const inventory = (await run('list')).data;
+  assert.equal(inventory.find(row => row.id === apiId).instance, 'api');
+  const peer = inventory.find(row => row.id === workerId).processes.find(row => row.ports.some(port => port.port === workerPort));
+  assert.ok(peer);
+  const crossClaim = await run('adopt', apiId, '--cwd', cwd, '--member', `${peer.pid}@${peer.birth}@${peer.boot}`, '--confirm');
+  assert.equal(crossClaim.data.outcomes[0].code, 'DENIED');
+  assert.equal((await launch('api', apiPort)).data.outcomes[0].code, 'BUSY');
+  assert.equal((await launch('conflict', workerPort)).data.outcomes[0].code, 'BUSY');
+  assert.equal((await run('freeze', apiId)).ok, true);
+  const client = stream(workerPort);
+  t.after(() => client.close());
+  await until(() => client.lines.some(line => line.includes(`PID=${peer.pid}`)), 'freezing the API must preserve the worker');
+  client.close();
+  assert.equal((await run('resume', apiId)).ok, true);
+  assert.equal((await run('sleep', apiId)).ok, true);
+  const ports = (await run('ports')).data;
+  assert.equal(ports.some(row => row.port === apiPort && row.protocol === 'tcp'), false);
+  assert.ok(ports.some(row => row.port === workerPort && row.pid === peer.pid && row.project === workerId));
+});
+
 test('local port inventory and reviewed lifecycle controls preserve unrelated sockets', { timeout: 125000 }, async t => {
   const cwd = await realpath(await mkdtemp(join(tmpdir(), 'pf-menu-')));
   const env = { ...process.env, PROJECTFREEZE_HOME: join(cwd, 'state') };

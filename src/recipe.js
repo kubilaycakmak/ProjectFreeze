@@ -17,7 +17,10 @@ export async function recipe(input) {
   if (!input || !argv(input.argv)) throw new Fault('USAGE', 'Supply an executable and literal arguments.');
   if (input.stop !== undefined && !argv(input.stop)) throw new Fault('USAGE', 'The shutdown command must be an argument array.');
   const cwd = await directory(input.cwd ?? '.');
-  const { env = [], dependencies = [], timeout = 10000, restart = 'never', ready, stop, cgroup, containers = [], systemd = [] } = input;
+  const { instance, env = [], dependencies = [], timeout = 10000, restart = 'never', ready, stop, cgroup, containers = [], systemd = [] } = input;
+  if (instance !== undefined && (typeof instance !== 'string' || !projectName.test(instance))) {
+    throw new Fault('USAGE', 'Use a workload instance name of up to 128 letters, digits, underscores, or hyphens, starting with a letter or digit.');
+  }
   if (!Array.isArray(env) || !env.every(s => typeof s === 'string' && envName.test(s) && !s.startsWith('PROJECTFREEZE_'))) {
     throw new Fault('USAGE', 'Environment references must be variable names.');
   }
@@ -39,7 +42,7 @@ export async function recipe(input) {
   if (cgroup !== undefined && (!linux || typeof cgroup !== 'string' || !isAbsolute(cgroup))) {
     throw new Fault('USAGE', 'A cgroup requires an absolute, delegated cgroup v2 directory on Linux.');
   }
-  return { argv: input.argv, cwd, env: [...new Set(env)], dependencies: [...new Set(dependencies)], timeout, restart, ready, stop, cgroup,
+  return { argv: input.argv, cwd, instance, env: [...new Set(env)], dependencies: [...new Set(dependencies)], timeout, restart, ready, stop, cgroup,
     containers, systemd, supervisors: supervisorPolicies(input.supervisors ?? []) };
 }
 

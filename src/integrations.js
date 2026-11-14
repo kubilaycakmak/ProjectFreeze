@@ -146,7 +146,7 @@ export async function restore(state, project, id, targets, mark) {
   const manifest = JSON.parse(await readFile(join(path, 'manifest.json'), 'utf8').catch(() => {
     throw new Fault('NOT_FOUND', 'A complete checkpoint manifest is missing.');
   }));
-  if (manifest.schemaVersion !== 1 || manifest.project !== project.id || manifest.cwd !== project.cwd ||
+  if (manifest.schemaVersion !== 1 || manifest.id !== id || manifest.project !== project.id || manifest.cwd !== project.cwd ||
       manifest.platform !== process.platform || manifest.arch !== arch() || manifest.kernel !== release() || manifest.boot !== await bootId()) {
     throw new Fault('DENIED', 'Checkpoint requires the original project, host boot, architecture, and kernel.');
   }
@@ -160,7 +160,7 @@ export async function restore(state, project, id, targets, mark) {
     }
     const images = join(info.DockerRootDir, 'containers', container.Id, 'checkpoints', id);
     if (JSON.stringify(await hashFiles(images)) !== JSON.stringify(manifest.files)) throw new Fault('DENIED', 'Checkpoint integrity verification failed.');
-    mark(id);
+    mark(id, { backend: 'docker', container: manifest.container, boot: manifest.boot });
     const collision = /^failed to upload checkpoint to containerd: commit failed: content sha256:[a-f0-9]{64}: already exists$/;
     for (let attempt = 0; attempt < 3; attempt++) {
       let failure;
@@ -178,7 +178,7 @@ export async function restore(state, project, id, targets, mark) {
       if (current.State.Running || current.State.Restarting || current.State.Paused || current.State.Dead || current.State.Pid) {
         throw new Fault('PARTIAL', 'Docker container state changed after a failed restore. Inspect it before retrying.');
       }
-      mark(id);
+      mark(id, { backend: 'docker', container: manifest.container, boot: manifest.boot });
     }
   }
   if (manifest.backend !== 'criu') throw new Fault('DENIED', 'Unknown checkpoint backend.');
@@ -187,7 +187,7 @@ export async function restore(state, project, id, targets, mark) {
   if (manifest.version !== version || targets.length) throw new Fault('DENIED', 'Restore requires the original CRIU version and capture scope.');
   const work = join(state, `restore-${randomUUID()}`);
   await mkdir(work, { mode: 0o700 });
-  mark(id);
+  mark(id, { backend: 'criu', boot: manifest.boot });
   const pidFile = join(work, 'pid');
   await command(cli, ['restore', '--no-default-config', '--images-dir', path, '--work-dir', work, '--log-file', 'restore.log',
     '--restore-detached', '--pidfile', pidFile], { timeout: 120000 });

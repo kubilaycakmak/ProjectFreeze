@@ -13,7 +13,7 @@ const usage = `ProjectFreeze
   projectfreeze menu --plain            Use line input and text output
   projectfreeze list | discover | listeners | ports | services | history
   projectfreeze inspect PROJECT
-  projectfreeze adopt --cwd DIR --member PID@BIRTH@BOOT --confirm [--recipe FILE]
+  projectfreeze adopt [PROJECT] --cwd DIR --member PID@BIRTH@BOOT --confirm [--recipe FILE]
   projectfreeze run --cwd DIR -- EXECUTABLE [ARG ...]
   projectfreeze run --recipe FILE
   projectfreeze freeze | resume | sleep | wake PROJECT [PROJECT ...]
@@ -92,7 +92,10 @@ export async function main(args) {
         try { file = JSON.parse(await readFile(resolve(values.recipe), 'utf8')); }
         catch { throw new Fault('USAGE', 'The recipe file could not be read as JSON.'); }
       }
-      if (action === 'adopt') input = { cwd, recipe: file, confirm: values.confirm, members: values.member?.map(target), exclude: values.exclude?.map(target) };
+      if (action === 'adopt') {
+        if (ids.length > 1) throw new Fault('USAGE', 'Choose at most one registered project for adoption.');
+        input = { id: ids[0], cwd, recipe: file, confirm: values.confirm, members: values.member?.map(target), exclude: values.exclude?.map(target) };
+      }
       else if (action === 'run') input = { recipe: file ? { ...file, cwd: resolve(values.cwd ?? file.cwd ?? '.') } : { cwd, argv: literal } };
       else input = { ids, force: values.force, backend: values.backend, checkpoint: values.checkpoint };
     } else if (readActions.has(action)) {
