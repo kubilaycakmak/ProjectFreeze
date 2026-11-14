@@ -1,0 +1,19 @@
+{
+  "name": "@kubilaycakmak/projectfreeze",
+  "version": "0.1.0-dev.1",
+  "description": "Local management for developer project execution environments",
+  "type": "module",
+  "bin": { "projectfreeze": "bin/projectfreeze.js" },
+  "engines": { "node": "^24.11.0 || ^26.0.0" },
+  "os": ["linux", "darwin", "win32"],
+  "cpu": ["x64", "arm64"],
+  "license": "MIT",
+  "repository": "github:kubilaycakmak/ProjectFreeze",
+  "files": ["bin", "src", "helpers", "docs", "examples"],
+  "scripts": {
+    "build:native": "node scripts/build-native.js",
+    "test": "node --test test/*.test.js",
+    "demo": "node examples/demo.js",
+    "check": "node --check bin/projectfreeze.js"
+  }
+}
