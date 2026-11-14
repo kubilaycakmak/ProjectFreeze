@@ -1,10 +1,10 @@
 import { readFile, realpath, mkdir, statfs } from 'node:fs/promises';
-import { isIP } from 'node:net';
 import { isAbsolute, join } from 'node:path';
 import { Fault } from './errors.js';
 import { directory } from './discovery.js';
 import { linux } from './platform.js';
 import { validSystemd } from './systemd.js';
+import { supervisorPolicies } from './supervisors.js';
 
 const envName = /^[A-Za-z_][A-Za-z_0-9]*$/;
 const projectName = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/;
@@ -39,7 +39,8 @@ export async function recipe(input) {
   if (cgroup !== undefined && (!linux || typeof cgroup !== 'string' || !isAbsolute(cgroup))) {
     throw new Fault('USAGE', 'A cgroup requires an absolute, delegated cgroup v2 directory on Linux.');
   }
-  return { argv: input.argv, cwd, env: [...new Set(env)], dependencies: [...new Set(dependencies)], timeout, restart, ready, stop, cgroup, containers, systemd };
+  return { argv: input.argv, cwd, env: [...new Set(env)], dependencies: [...new Set(dependencies)], timeout, restart, ready, stop, cgroup,
+    containers, systemd, supervisors: supervisorPolicies(input.supervisors ?? []) };
 }
 
 export function launchEnv(recipe, available) {
@@ -62,11 +63,4 @@ export async function prepareCgroup(parent, id) {
     if ((await readFile(join(child, 'cgroup.procs'), 'utf8')).trim()) throw new Error();
     return child;
   } catch { throw new Fault('DENIED', 'Could not create an empty dedicated cgroup in the delegated cgroup v2 directory.'); }
-}
-
-export function bindAddress(value, publicListener) {
-  if (!isIP(value) || (!publicListener && !['127.0.0.1', '::1'].includes(value))) {
-    throw new Fault('USAGE', 'Set a literal IP. A non-loopback workload listener requires explicit public opt-in.');
-  }
-  return value;
 }

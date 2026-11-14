@@ -61,6 +61,8 @@ export async function candidates(projects, rows = undefined) {
     if (process.ports.length) evidence.push('listening-socket');
     const parent = byPid.get(process.parent);
     if (parent && within(root.path, parent.cwd)) evidence.push('observed-parent');
+    if (process.parent <= 1 || !parent) evidence.push('parent-outside-scan');
+    if (process.session === process.pid || process.group === process.pid) evidence.push('separate-session-or-group');
     group.members.push({ ...publicProcess(process), evidence });
     group.unresolved.push(identity(process));
     groups.set(id, group);
@@ -85,6 +87,7 @@ export function summarize(project, rows, discovered) {
     rssSum: processes.some(p => p.rss !== undefined) ? processes.reduce((n, p) => n + (p.rss ?? 0), 0) : undefined,
     cpuPercent: processes.some(p => p.cpuPercent !== undefined) ? processes.reduce((n, p) => n + (p.cpuPercent ?? 0), 0) : undefined,
     dependencies: project.recipe?.dependencies ?? [], containers: project.recipe?.containers ?? [], systemd: project.recipe?.systemd ?? [],
+    supervisors: project.recipe?.supervisors?.map(({ kind, name, shared }) => ({ kind, name, shared })) ?? [],
     excluded: project.excluded, unresolved: discovered?.unresolved ?? [], observedAt: new Date().toISOString(),
     metrics: 'CPU is sampled as percent of one core. RSS sums resident pages and can count shared pages more than once.' };
 }

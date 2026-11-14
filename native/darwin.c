@@ -11,6 +11,7 @@
 #include <sys/proc.h>
 #include <sys/proc_info.h>
 #include <unistd.h>
+#include "posix-launch.h"
 
 static void identity(const struct proc_bsdinfo *info, char *out, size_t capacity) {
     snprintf(out, capacity, "%llu.%llu", (unsigned long long)info->pbi_start_tvsec,
@@ -82,17 +83,7 @@ static int control(const char *verb, pid_t pid, const char *birth) {
 
 int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "scan")) return scan();
-    if (argc >= 4 && !strcmp(argv[1], "launch")) {
-        puts("ready");
-        fflush(stdout);
-        if (getchar() != 'G') return 4;
-        int null = open("/dev/null", O_RDWR);
-        if (null < 0) return 4;
-        for (int i = 0; i < 3; i++) if (dup2(null, i) < 0) return 4;
-        if (null > 2) close(null);
-        execvp(argv[3], argv + 3);
-        return 126;
-    }
+    if (argc >= 5 && !strcmp(argv[1], "launch")) return supervised_launch(argv);
     if (argc != 4) return 2;
     char *end;
     long pid = strtol(argv[2], &end, 10);

@@ -22,7 +22,6 @@ Freeze preserves process memory and usually retains bound ports. Sleep shuts dow
 
 - [Commands, recipes, and MCP](docs/interfaces.md)
 - [Architecture, security, and recovery](docs/operations.md)
-- [Public HTTPS workload](docs/public-workload.md)
 - [Development, verification, and packaging](CONTRIBUTING.md)
 
 MIT licensed. See [LICENSE](LICENSE).

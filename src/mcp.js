@@ -11,7 +11,10 @@ const recipe = { type: 'object', properties: {
   ready: { type: 'object', properties: { address: { enum: ['127.0.0.1', '::1'] }, port: { type: 'integer', minimum: 1, maximum: 65535 } }, required: ['address', 'port'] },
   restart: { enum: ['never', 'on-failure'] }, cgroup: id,
   containers: { type: 'array', items: { type: 'object', properties: { project: id, service: id, shared: { type: 'boolean' } }, required: ['project', 'service', 'shared'] } },
-  systemd: { type: 'array', items: { type: 'object', properties: { unit: id, shared: { type: 'boolean' } }, required: ['unit', 'shared'] } }
+  systemd: { type: 'array', items: { type: 'object', properties: { unit: id, shared: { type: 'boolean' } }, required: ['unit', 'shared'] } },
+  supervisors: { type: 'array', maxItems: 12, items: { type: 'object', properties: {
+    kind: { enum: ['launchd', 'scm', 'task'] }, name: id, shared: { type: 'boolean' }, plist: id
+  }, required: ['kind', 'name', 'shared'], additionalProperties: false } }
 }, required: ['argv', 'cwd'], additionalProperties: false };
 const tool = (name, description, properties = {}, required = [], mutation = false) => ({
   name, description, inputSchema: { type: 'object', properties, required, additionalProperties: false },

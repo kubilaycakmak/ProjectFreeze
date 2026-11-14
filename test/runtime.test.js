@@ -18,14 +18,13 @@ const code = () => new Promise(resolve => {
   const listener = createServer();
   listener.listen(0, '127.0.0.1', () => { const port = listener.address().port; listener.close(() => resolve(port)); });
 });
-
 async function eventually(callback, message, timeout = 14000) {
   const end = Date.now() + timeout;
   do { const value = await callback(); if (value) return value; await delay(200); } while (Date.now() < end);
   assert.fail(message);
 }
 
-test('real ownership, lifecycle, IPC authentication, public workload policy and MCP', { timeout: 130000 }, async t => {
+test('real ownership, lifecycle, IPC authentication and MCP', { timeout: 130000 }, async t => {
   const base = await realpath(await mkdtemp(join(tmpdir(), 'pf-')));
   const project = join(base, 'Project ü with spaces');
   const foreign = join(base, 'Unrelated process');
@@ -137,12 +136,4 @@ test('real ownership, lifecycle, IPC authentication, public workload policy and 
     assert.equal((await eventually(() => messages.find(m => m.id === 3), 'call MCP tool')).result.structuredContent.data.status, 'complete');
     assert.ok(messages.some(m => m.method === 'notifications/progress'));
   } finally { child.stdin.end(); lines.close(); }
-});
-
-test('public bind fails closed without explicit opt-in and TLS', async () => {
-  const example = fileURLToPath(new URL('../examples/workload.js', import.meta.url));
-  for (const [flag, expectation] of [['0', /requires explicit public opt-in/], ['1', /requires certificate/]]) {
-    await assert.rejects(exec(process.execPath, [example], { env: { ...process.env, PF_DEMO_HOST: '0.0.0.0', PF_DEMO_PUBLIC: flag,
-      PF_DEMO_TLS_KEY: '', PF_DEMO_TLS_CERT: '' }, timeout: 5000 }), expectation);
-  }
 });

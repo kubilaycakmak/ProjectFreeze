@@ -146,7 +146,6 @@ export async function daemon() {
     await unlink(recordPath(dir)).catch(() => {});
     if (!loopback) await unlink(socketPath).catch(() => {});
     while (engine.current || engine.tracking) await delay(100);
-    for (const timer of engine.timers.values()) clearTimeout(timer);
     store.close();
     lock.exec('ROLLBACK');
     lock.close();

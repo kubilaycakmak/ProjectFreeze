@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#include "posix-launch.h"
 
 static int control(const char *verb, int pid, const char *birth) {
     int signal_number = 0;
@@ -48,22 +49,7 @@ static int control(const char *verb, int pid, const char *birth) {
 }
 
 int main(int argc, char **argv) {
-    if (argc >= 4 && !strcmp(argv[1], "launch")) {
-        if (strcmp(argv[2], "-") != 0) {
-            int fd = open(argv[2], O_WRONLY | O_CLOEXEC | O_NOFOLLOW);
-            if (fd < 0 || write(fd, "0", 1) != 1) return 4;
-            close(fd);
-        }
-        puts("ready");
-        fflush(stdout);
-        if (getchar() != 'G') return 4;
-        int null = open("/dev/null", O_RDWR);
-        if (null < 0) return 4;
-        for (int i = 0; i < 3; i++) if (dup2(null, i) < 0) return 4;
-        if (null > 2) close(null);
-        execvp(argv[3], argv + 3);
-        return 126;
-    }
+    if (argc >= 5 && !strcmp(argv[1], "launch")) return supervised_launch(argv);
     if (argc != 4) return 2;
     char *end;
     long pid = strtol(argv[2], &end, 10);

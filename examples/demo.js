@@ -16,13 +16,12 @@ const port = await new Promise(resolve => {
   const server = createServer();
   server.listen(0, '127.0.0.1', () => { const port = server.address().port; server.close(() => resolve(port)); });
 });
-const env = { ...process.env, PROJECTFREEZE_HOME: join(base, 'state'), PF_DEMO_PORT: String(port), PF_DEMO_STOP_FILE: marker,
-  PF_DEMO_HOST: '127.0.0.1', PF_DEMO_PUBLIC: '0' };
+const env = { ...process.env, PROJECTFREEZE_HOME: join(base, 'state'), PF_DEMO_PORT: String(port), PF_DEMO_STOP_FILE: marker };
 const recipe = join(base, 'recipe.json');
 const start = [process.execPath, worker];
 const stop = [process.execPath, '-e', 'require("node:fs").writeFileSync(process.argv[1], "stop")', marker];
 await writeFile(join(base, 'package.json'), '{}');
-await writeFile(recipe, JSON.stringify({ cwd: base, argv: start, stop, env: ['PF_DEMO_PORT', 'PF_DEMO_STOP_FILE', 'PF_DEMO_HOST', 'PF_DEMO_PUBLIC'],
+await writeFile(recipe, JSON.stringify({ cwd: base, argv: start, stop, env: ['PF_DEMO_PORT', 'PF_DEMO_STOP_FILE'],
   ready: { address: '127.0.0.1', port } }));
 const run = async (...args) => {
   const result = await exec(process.execPath, [cli, '--json', ...args], { env, windowsHide: true }).catch(error => error);

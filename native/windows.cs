@@ -199,8 +199,8 @@ static class Native {
             if (Marshal.GetLastWin32Error() == 183) return 6;
             var startup = new Startup { size = Marshal.SizeOf(typeof(Startup)) };
             Child child;
-            var command = new StringBuilder(String.Join(" ", args.Skip(2).Select(Quote)));
-            if (!CreateProcess(args[2], command, IntPtr.Zero, IntPtr.Zero, false, 0x08000004, IntPtr.Zero, null, ref startup, out child)) return 4;
+            var command = new StringBuilder(String.Join(" ", args.Skip(3).Select(Quote)));
+            if (!CreateProcess(args[3], command, IntPtr.Zero, IntPtr.Zero, false, 0x08000004, IntPtr.Zero, null, ref startup, out child)) return 4;
             try {
                 long created, exited, kernel, user;
                 if (!AssignProcessToJobObject(job, child.process) || !GetProcessTimes(child.process, out created, out exited, out kernel, out user)) {
@@ -214,6 +214,13 @@ static class Native {
                 WaitForSingleObject(child.process, UInt32.MaxValue);
                 uint code;
                 if (!GetExitCodeProcess(child.process, out code)) return 4;
+                string staged = args[2] + ".tmp";
+                using (var file = new FileStream(staged, FileMode.CreateNew, FileAccess.Write, FileShare.None)) {
+                    byte[] bytes = Encoding.ASCII.GetBytes(code.ToString(CultureInfo.InvariantCulture) + "\n");
+                    file.Write(bytes, 0, bytes.Length);
+                    file.Flush(true);
+                }
+                File.Move(staged, args[2]);
                 return (int)code;
             } finally { CloseHandle(child.thread); CloseHandle(child.process); }
         } finally { CloseHandle(job); }
@@ -253,7 +260,7 @@ static class Native {
             if (args.Length == 2 && args[0] == "job-scan") return JobScan(args[1]);
             if (args.Length == 1 && args[0] == "boot") return Boot();
             if (args.Length == 2 && args[0] == "secure-directory") return SecureDirectory(args[1]);
-            if (args.Length >= 3 && args[0] == "launch") return Launch(args);
+            if (args.Length >= 4 && args[0] == "launch") return Launch(args);
             int pid;
             if (args.Length == 3 && Int32.TryParse(args[1], out pid)) return Control(args[0], pid, args[2]);
             return 2;

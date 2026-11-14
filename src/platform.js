@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { access, readFile, readdir, readlink, realpath, stat } from 'node:fs/promises';
+import { access, readFile, readdir, readlink, realpath, stat, writeFile } from 'node:fs/promises';
 import { constants, statSync } from 'node:fs';
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -211,16 +211,24 @@ export async function executable(value, cwd, env) {
   throw new Fault('UNAVAILABLE', 'The recipe executable could not be resolved. Use an absolute executable or add it to PATH.');
 }
 
-export async function stageLaunch(argv, cwd, env, job, cgroup, onExit) {
+export async function stageLaunch(argv, cwd, env, job, cgroup, statusFile) {
   await checkHelper();
   const file = await executable(argv[0], cwd, env);
   const marker = windows ? job : cgroup ? join(cgroup, 'cgroup.procs') : '-';
-  const child = spawn(helper, ['launch', marker, file, ...argv.slice(1)], { cwd, env, windowsHide: true, detached: true,
+  let launcher = helper;
+  if (windows) {
+    const bytes = await readFile(helper);
+    const hash = createHash('sha256').update(bytes).digest('hex');
+    launcher = join(dirname(statusFile), `launcher-${hash}.exe`);
+    await writeFile(launcher, bytes, { flag: 'wx' }).catch(async error => {
+      if (error.code !== 'EEXIST' || createHash('sha256').update(await readFile(launcher)).digest('hex') !== hash) throw error;
+    });
+  }
+  const child = spawn(launcher, ['launch', marker, statusFile, file, ...argv.slice(1)], { cwd, env, windowsHide: true, detached: true,
     stdio: ['pipe', 'pipe', 'ignore'] });
-  let released = false;
-  child.once('exit', code => { if (windows) ignorePids.delete(child.pid); if (released) onExit(code); });
+  child.once('exit', () => { if (child.pid) ignorePids.delete(child.pid); });
   child.stdin.on('error', () => {});
-  if (windows && child.pid) ignorePids.add(child.pid);
+  if (child.pid) ignorePids.add(child.pid);
   const lines = createInterface({ input: child.stdout, terminal: false });
   let timer;
   try {
@@ -230,10 +238,12 @@ export async function stageLaunch(argv, cwd, env, job, cgroup, onExit) {
       lines.once('line', resolve);
       lines.once('close', () => reject(new Fault('DENIED', 'Native launcher could not prepare the workload.')));
     });
-    const pid = windows ? Number(ready.split('\t')[0]) : child.pid;
+    const pid = Number(ready.split('\t')[0]);
     const root = (await scan(false, pid)).find(row => row.pid === pid);
-    if (!root || (windows && root.birth !== ready.split('\t')[1])) throw new Fault('PARTIAL', 'Launch identity could not be verified.');
-    return { root: identity(root), release() { released = true; child.stdin.end('G'); child.unref(); }, abort() { child.stdin.end(); } };
+    if (!root || (windows && root.birth !== ready.split('\t')[1]) || (!windows && root.group !== pid)) {
+      throw new Fault('PARTIAL', 'Launch identity could not be verified.');
+    }
+    return { root: identity(root), release() { child.stdin.end('G'); child.unref(); }, abort() { child.stdin.end(); } };
   } catch (error) {
     child.stdin.end();
     throw error;

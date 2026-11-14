@@ -33,12 +33,17 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ matrix.node }}
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        if: runner.os == 'Windows'
+        with:
+          dotnet-version: 10.0.100
+      - name: Select the pinned Roslyn compiler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_ENV -Value "PF_DOTNET_SDK=$env:DOTNET_ROOT/sdk/10.0.100"
       - run: npm run build:native
+      - run: node scripts/reproducible.js
       - run: npm test
-      - name: Verify non-loopback TLS with certificate validation
-        if: matrix.runner == 'ubuntu-24.04' && matrix.node == 24
-        shell: bash
-        run: PF_TEST_PUBLIC=1 node --test test/public.test.js
       - name: Verify user service and timer control
         if: matrix.runner == 'ubuntu-24.04' && matrix.node == 24
         shell: bash
@@ -78,6 +83,23 @@ jobs:
           name: candidate-tarball
           path: dist/
           if-no-files-found: error
+
+  attest:
+    needs: [package, consumer]
+    if: github.event_name != 'pull_request' && (github.event.repository.visibility == 'public' || vars.PF_ENABLE_ATTESTATIONS == 'true')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: candidate-tarball
+          path: dist
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: 'dist/*.tgz'
 
   consumer:
     needs: package
