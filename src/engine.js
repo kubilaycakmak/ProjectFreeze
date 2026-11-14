@@ -1,0 +1,518 @@
+import { randomUUID } from 'node:crypto';
+import { createConnection } from 'node:net';
+import { basename } from 'node:path';
+import { readFile, rmdir } from 'node:fs/promises';
+import { setTimeout as delay } from 'node:timers/promises';
+import { candidates, directory, projectId, summarize } from './discovery.js';
+import { Fault, problem } from './errors.js';
+import { checkpoint, composeTargets, containerAction, restore } from './integrations.js';
+import { command, containerPids, control, executable, identity, key, matches, scan, stageLaunch, windows } from './platform.js';
+import { launchEnv, prepareCgroup, recipe } from './recipe.js';
+
+const suspended = row => row.state === 'T';
+const stopped = row => row.state === 'Z' || row.state === 'X';
+const alive = (rows, target) => rows.find(row => matches(row, target) && !stopped(row));
+const visible = (rows, project) => rows.filter(row => !stopped(row) && project.members.some(target => matches(target, row)));
+const newProject = (id, cwd) => ({ id, cwd, name: basename(cwd), members: [], excluded: [], state: 'registered' });
+const changes = new Set(['adopt', 'run', 'freeze', 'resume', 'sleep', 'wake', 'checkpoint', 'restore', 'reconcile']);
+
+async function listening({ address, port }) {
+  return new Promise(resolve => {
+    const socket = createConnection({ host: address, port });
+    const done = value => { socket.destroy(); resolve(value); };
+    socket.once('connect', () => done(true));
+    socket.once('error', () => done(false));
+    socket.setTimeout(500, () => done(false));
+  });
+}
+
+export class Engine {
+  constructor(store, state) {
+    this.store = store;
+    this.state = state;
+    this.current = null;
+    this.tracking = false;
+    this.closing = false;
+    this.timers = new Map();
+    this.store.recover();
+  }
+
+  async dispatch(action, input = {}) {
+    if (action === 'history') return this.store.history();
+    if (action === 'operation') return this.store.operation(input.id);
+    if (action === 'cancel') {
+      if (this.current?.op.id !== input.id) throw new Fault('NOT_FOUND', 'Operation is no longer running.');
+      this.current.cancelled = true;
+      return { id: input.id, cancellation: 'requested' };
+    }
+    if (action === 'list' || action === 'discover' || action === 'inspect') return this.inspect(action, input);
+    if (!changes.has(action)) throw new Fault('USAGE', 'Unknown operation.');
+    while (this.tracking) await delay(25);
+    if (this.current || this.closing) throw new Fault('BUSY', 'An operation is running or the daemon is shutting down.');
+    const ids = [...new Set(input.ids ?? [])];
+    if (!['adopt', 'run', 'reconcile'].includes(action) && (!ids.length || ids.length > 32 || !ids.every(id => /^p-[a-f0-9]{16}$/.test(id)))) {
+      throw new Fault('USAGE', 'Provide one or more registered project IDs.');
+    }
+    const op = { id: randomUUID(), action, projects: ids, status: 'running', started: new Date().toISOString(), outcomes: [] };
+    const job = { op, cancelled: false };
+    this.store.journal(op);
+    this.current = job;
+    void this.work(job, input).catch(() => { this.current = null; });
+    return { id: op.id, status: op.status };
+  }
+
+  async inspect(action, input) {
+    const projects = this.store.projects();
+    const rows = await scan();
+    const discovered = await candidates(projects, rows);
+    const observed = discovered.map(group => ({ ...group, processes: group.members, processCount: group.members.length,
+      ports: group.members.flatMap(member => member.ports), dependencies: [], containers: [] }));
+    if (action === 'discover') return observed;
+    const managed = projects.map(project => summarize(project, rows, observed.find(d => d.id === project.id)));
+    const combined = [...managed, ...observed.filter(candidate => !projects.some(p => p.id === candidate.id))];
+    if (action === 'list') return combined;
+    const project = combined.find(p => p.id === input.id);
+    if (!project) throw new Fault('NOT_FOUND', 'Unknown project ID.');
+    return { ...project, candidates: observed.find(candidate => candidate.id === input.id)?.processes ?? [],
+      operations: this.store.history().filter(op => op.projects.includes(input.id)).slice(0, 12) };
+  }
+
+  check(job) { if (job.cancelled) throw new Fault('CANCELLED', 'Cancelled at a resource boundary. Completed effects remain in the journal.'); }
+  pending(job, project, text) { job.op.pending = text; this.store.commit(project, job.op); }
+  record(job, project, target, status, error) {
+    delete job.op.pending;
+    job.op.outcomes.push({ target, status, ...(error ? problem(error) : {}) });
+    this.store.commit(project, job.op);
+  }
+
+  async work(job, input) {
+    const { op } = job;
+    try {
+      if (op.action === 'adopt') await this.adopt(job, input);
+      else if (op.action === 'run') await this.run(job, input);
+      else if (op.action === 'reconcile') await this.reconcile(job, input.ids);
+      else {
+        const all = this.store.projects();
+        const byId = new Map(all.map(project => [project.id, project]));
+        const ordered = [];
+        const visiting = new Set();
+        const add = id => {
+          if (visiting.has(id)) throw new Fault('USAGE', 'Dependency graph contains a cycle.');
+          if (ordered.includes(id)) return;
+          const project = byId.get(id);
+          if (!project) throw new Fault('NOT_FOUND', 'Project or registered dependency is missing.');
+          visiting.add(id);
+          for (const dep of project.recipe?.dependencies ?? []) {
+            if (op.action === 'wake' || op.projects.includes(dep)) add(dep);
+          }
+          visiting.delete(id);
+          ordered.push(id);
+        };
+        op.projects.forEach(add);
+        if (['freeze', 'sleep'].includes(op.action)) ordered.reverse();
+        for (const id of ordered) {
+          this.check(job);
+          const project = this.store.project(id);
+          try {
+            if (op.action === 'freeze') await this.freeze(job, project);
+            if (op.action === 'resume') await this.resume(job, project);
+            if (op.action === 'sleep') await this.sleep(job, project, input);
+            if (op.action === 'wake') await this.wake(job, project);
+            if (op.action === 'checkpoint') await this.capture(job, project, input);
+            if (op.action === 'restore') await this.restore(job, project, input);
+          } catch (error) {
+            if (['freezing', 'resuming', 'sleeping-in-progress', 'waking', 'restoring'].includes(project.state)) project.state = 'partial';
+            this.record(job, project, id, 'failed', error);
+            if (error.code === 'CANCELLED' || ['wake', 'sleep'].includes(op.action)) break;
+          }
+        }
+      }
+      const failures = op.outcomes.filter(outcome => outcome.status === 'failed');
+      op.status = job.cancelled ? 'cancelled' : failures.length ? (op.outcomes.length === 1 ? 'failed' : 'partial') : 'complete';
+    } catch (error) {
+      this.record(job, undefined, op.action, 'failed', error);
+      op.status = job.cancelled ? 'cancelled' : 'failed';
+    } finally {
+      op.ended = new Date().toISOString();
+      this.store.journal(op);
+      this.current = null;
+    }
+  }
+
+  async adopt(job, input) {
+    const cwd = await directory(input.cwd);
+    const id = projectId(cwd);
+    const projects = this.store.projects();
+    const project = projects.find(p => p.id === id) ?? newProject(id, cwd);
+    if (!['registered', 'exited', 'running', 'adopted'].includes(project.state)) throw new Fault('BUSY', 'Reconcile the current project state before changing ownership.');
+    if (input.confirm !== true || !Array.isArray(input.members) || !input.members.length || input.members.length > 256) {
+      throw new Fault('USAGE', 'Inspect discovery and explicitly approve the listed PID@creation@boot identities.');
+    }
+    const rows = await scan();
+    const group = (await candidates(projects, rows)).find(candidate => candidate.id === id);
+    const excluded = Array.isArray(input.exclude) ? input.exclude : [];
+    for (const target of [...input.members, ...excluded]) {
+      if (!group?.members.some(row => matches(row, target)) && !project.members.some(row => matches(row, target))) {
+        throw new Fault('DENIED', 'An approved identity no longer matches the current candidates. Review discovery again.');
+      }
+    }
+    for (const target of input.members) {
+      if (!alive(rows, target) || excluded.some(item => matches(item, target))) throw new Fault('DENIED', 'A selected process is stale or excluded.');
+      if (!project.members.some(item => matches(item, target))) project.members.push({ ...identity(target), source: 'adopted' });
+    }
+    project.members = project.members.filter(target => !excluded.some(item => matches(item, target)));
+    project.excluded.push(...excluded.map(identity));
+    project.state = project.root ? 'running' : 'adopted';
+    if (input.recipe) project.recipe = await recipe({ ...input.recipe, cwd });
+    job.op.projects = [id];
+    this.record(job, project, id, 'adopted');
+  }
+
+  async run(job, input) {
+    const configuration = await recipe(input.recipe);
+    const id = projectId(configuration.cwd);
+    const project = this.store.projects().find(p => p.id === id) ?? newProject(id, configuration.cwd);
+    if (!['registered', 'exited', 'sleeping'].includes(project.state)) throw new Fault('BUSY', 'This project already owns a workload. Inspect it before launching another.');
+    if (visible(await scan(false), project).length) throw new Fault('BUSY', 'Verified processes are already running for this project.');
+    const all = this.store.projects();
+    for (const id of configuration.dependencies) {
+      if (id === project.id || !all.some(p => p.id === id && p.state === 'running')) throw new Fault('UNAVAILABLE', 'Start registered dependencies before running this recipe.');
+    }
+    project.recipe = configuration;
+    job.op.projects = [id];
+    try { await this.launch(job, project); }
+    catch (error) { project.state = 'partial'; this.record(job, project, id, 'failed', error); }
+  }
+
+  async launch(job, project) {
+    const config = project.recipe;
+    if (!config) throw new Fault('UNAVAILABLE', 'This project has no reviewed restart recipe.');
+    const env = launchEnv(config, process.env);
+    if (config.ready && await listening(config.ready)) throw new Fault('BUSY', 'The readiness port already accepts connections.');
+    if (project.cgroup) await rmdir(project.cgroup).catch(() => {});
+    project.cgroup = await prepareCgroup(config.cgroup, `${project.id}-${randomUUID()}`);
+    project.job = windows ? `Local\\ProjectFreeze-${randomUUID()}` : undefined;
+    project.sleepingIntent = false;
+    project.state = 'waking';
+    this.pending(job, project, 'stage workload launch');
+    const staged = await stageLaunch(config.argv, project.cwd, env, project.job, project.cgroup, code => this.exited(project.id, code));
+    try {
+      project.root = staged.root;
+      project.members = [{ ...staged.root, source: 'launched' }];
+      this.pending(job, project, 'release verified staged workload');
+      this.check(job);
+      staged.release();
+    } catch (error) { staged.abort(); throw error; }
+    await this.ready(job, project);
+    project.state = 'running';
+    this.record(job, project, project.id, 'running');
+  }
+
+  async ready(job, project) {
+    const deadline = Date.now() + (project.recipe?.timeout ?? 10000);
+    do {
+      this.check(job);
+      const rows = await scan(Boolean(project.recipe?.ready));
+      await this.track(project, rows);
+      if (project.root && !visible(rows, project).length) throw new Fault('PARTIAL', 'Workload exited before readiness.');
+      const port = project.recipe?.ready;
+      if (!port || (visible(rows, project).some(row => row.ports.some(p => p.port === port.port &&
+        [port.address, '0.0.0.0', '*', '::', '0:0:0:0:0:0:0:0'].includes(p.address))) && await listening(port))) return;
+      await delay(200);
+    } while (Date.now() < deadline);
+    throw new Fault('PARTIAL', 'Readiness deadline expired without a verified workload listener.');
+  }
+
+  async track(project, rows) {
+    if (!project.root) return;
+    let contained = null;
+    try { contained = await containerPids(project); }
+    catch (error) {
+      if (!windows || error.code !== 'NOT_FOUND') throw error;
+    }
+    const root = alive(rows, project.root);
+    const foreign = new Set(this.store.projects().filter(other => other.id !== project.id).flatMap(other => other.members.map(key)));
+    for (const row of rows) {
+      if (stopped(row) || foreign.has(key(row)) || project.excluded.some(item => matches(item, row)) ||
+          project.members.some(item => matches(item, row))) continue;
+      if (contained?.has(row.pid) || (!contained && root && row.group === root.pid && row.group === root.group)) {
+        project.members.push({ ...identity(row), source: 'contained' });
+      }
+    }
+  }
+
+  async exited(id, code) {
+    if (code === 0 || code === null) return;
+    if (this.timers.has(id)) return;
+    const timer = setTimeout(() => {
+      this.timers.delete(id);
+      if (this.current || this.tracking) return void this.exited(id, code);
+      const project = this.store.project(id);
+      if (project.recipe?.restart !== 'on-failure' || project.sleepingIntent || !['running', 'exited'].includes(project.state)) return;
+      const budget = project.restarts ?? 0;
+      if (budget >= 3) return;
+      project.restarts = budget + 1;
+      project.state = 'exited';
+      this.store.save(project);
+      void this.dispatch('run', { recipe: project.recipe }).catch(() => {});
+    }, 2000);
+    timer.unref();
+    this.timers.set(id, timer);
+  }
+
+  async poll() {
+    if (this.current || this.tracking) return;
+    this.tracking = true;
+    try {
+      const projects = this.store.projects().filter(p => p.members.length);
+      if (!projects.length) return;
+      const rows = await scan(false);
+      for (const project of projects) {
+        const before = JSON.stringify(project);
+        await this.track(project, rows);
+        const live = visible(rows, project);
+        if (['running', 'adopted'].includes(project.state) && !live.length) project.state = 'exited';
+        if (project.state === 'frozen' && (!project.frozenContainers?.length && !live.length || live.some(row => !suspended(row)))) project.state = 'partial';
+        if (JSON.stringify(project) !== before) this.store.save(project);
+      }
+    } finally { this.tracking = false; }
+  }
+
+  async freeze(job, project) {
+    if (!['running', 'adopted', 'partial', 'frozen', 'registered'].includes(project.state)) throw new Fault('BUSY', 'Project is not in a freezable state.');
+    const all = this.store.projects();
+    if (all.some(other => other.id !== project.id && !job.op.projects.includes(other.id) && other.recipe?.dependencies.includes(project.id) &&
+        !['sleeping', 'exited', 'registered', 'frozen'].includes(other.state))) {
+      throw new Fault('BUSY', 'An active unselected project still uses this dependency.');
+    }
+    const targets = await composeTargets(project, all);
+    project.state = 'freezing';
+    project.frozenContainers ??= [];
+    this.pending(job, project, 'freeze barrier started');
+    for (const target of targets) {
+      this.check(job);
+      if (target.shared) { this.record(job, project, `${target.project}/${target.service}`, 'shared'); continue; }
+      if (!target.running || target.paused) continue;
+      this.pending(job, project, `pause container ${target.id}`);
+      await containerAction('pause', target.id);
+      project.frozenContainers.push(target.id);
+      this.record(job, project, target.id, 'frozen');
+    }
+    let previous;
+    const deadline = Date.now() + 10000;
+    do {
+      this.check(job);
+      const rows = await scan(false);
+      await this.track(project, rows);
+      const members = visible(rows, project);
+      if (!members.length && !targets.some(t => t.running && !t.shared)) throw new Fault('NOT_FOUND', 'No live owned resources are available to freeze.');
+      for (const member of members.filter(row => !suspended(row))) {
+        this.check(job);
+        this.pending(job, project, `freeze process ${key(member)}`);
+        if (await control('freeze', member)) project.members.find(row => matches(row, member)).suspended = true;
+        this.record(job, project, String(member.pid), 'freeze-requested');
+      }
+      const signature = members.map(key).sort().join(',');
+      if (signature === previous && members.every(suspended)) {
+        project.state = 'frozen';
+        this.record(job, project, project.id, 'frozen');
+        return;
+      }
+      previous = signature;
+      await delay(125);
+    } while (Date.now() < deadline);
+    throw new Fault('PARTIAL', 'Freeze barrier did not converge. Inspect history and resume the resources this operation suspended.');
+  }
+
+  async resume(job, project) {
+    const targets = await composeTargets(project, this.store.projects());
+    project.state = 'resuming';
+    this.pending(job, project, 'resume recorded suspensions');
+    const rows = await scan(false);
+    for (const member of project.members.filter(m => m.suspended)) {
+      this.check(job);
+      const live = alive(rows, member);
+      this.pending(job, project, `resume process ${key(member)}`);
+      if (live) {
+        await control('resume', member);
+        if ((await scan(false)).some(row => matches(row, member) && suspended(row))) throw new Fault('PARTIAL', 'Process remains suspended.');
+      }
+      delete member.suspended;
+      this.record(job, project, String(member.pid), live ? 'resumed' : 'exited');
+    }
+    for (const id of [...(project.frozenContainers ?? [])]) {
+      this.check(job);
+      const target = targets.find(t => t.id === id && !t.shared);
+      if (!target) throw new Fault('DENIED', 'Container is outside current exclusive ownership.');
+      this.pending(job, project, `resume container ${id}`);
+      if (target.paused) await containerAction('unpause', id);
+      project.frozenContainers = project.frozenContainers.filter(value => value !== id);
+      this.record(job, project, id, 'resumed');
+    }
+    const after = visible(await scan(false), project);
+    const currentTargets = await composeTargets(project, this.store.projects());
+    if (after.some(row => suspended(row) || ['t', 'M', '?'].includes(row.state)) || currentTargets.some(t => !t.shared && t.paused)) {
+      throw new Fault('PARTIAL', 'A member remains externally suspended or its execution state cannot be verified.');
+    }
+    if (after.length) await this.ready(job, project);
+    project.state = after.length || targets.some(t => t.running) ? (project.root ? 'running' : 'adopted') : 'exited';
+    this.record(job, project, project.id, project.state);
+  }
+
+  async sleep(job, project, input) {
+    if (!project.recipe) throw new Fault('UNAVAILABLE', 'Add an approved restart recipe before sleep. Freeze preserves a workload without a recipe.');
+    if (project.state === 'sleeping') { this.record(job, project, project.id, 'sleeping'); return; }
+    const all = this.store.projects();
+    if (all.some(other => other.id !== project.id && other.recipe?.dependencies.includes(project.id) && !['sleeping', 'exited', 'registered'].includes(other.state))) {
+      throw new Fault('BUSY', 'An active project still uses this dependency.');
+    }
+    const targets = await composeTargets(project, all);
+    const before = await scan();
+    await this.track(project, before);
+    const members = visible(before, project);
+    if (members.some(suspended)) throw new Fault('BUSY', 'Resume the project before graceful shutdown.');
+    if (windows && members.length && !project.recipe.stop && input.force !== true) throw new Fault('UNSUPPORTED', 'Windows requires an application shutdown command or explicit --force approval.');
+    project.sleepingIntent = true;
+    project.state = 'sleeping-in-progress';
+    this.pending(job, project, 'disable managed restart and begin shutdown');
+    const portKeys = new Set(members.flatMap(row => row.ports.map(port => `${port.address}:${port.port}`)));
+    if (members.length && project.recipe.stop) {
+      const env = launchEnv(project.recipe, process.env);
+      const executablePath = await executable(project.recipe.stop[0], project.cwd, env);
+      this.check(job);
+      this.pending(job, project, 'run reviewed application shutdown command');
+      await command(executablePath, project.recipe.stop.slice(1), { cwd: project.cwd, env, timeout: project.recipe.timeout });
+    } else if (!windows) {
+      for (const row of [...members].reverse()) {
+        this.check(job);
+        this.pending(job, project, `request shutdown of process ${key(row)}`);
+        try { await control('stop', row); }
+        catch (error) { if (error.code !== 'NOT_FOUND') throw error; }
+        this.record(job, project, String(row.pid), 'shutdown-requested');
+      }
+    }
+    let remaining = members;
+    const deadline = Date.now() + project.recipe.timeout;
+    while (remaining.length && Date.now() < deadline && !(windows && !project.recipe.stop && input.force)) {
+      this.check(job);
+      await delay(125);
+      const rows = await scan(false);
+      await this.track(project, rows);
+      remaining = visible(rows, project);
+    }
+    if (remaining.length && input.force === true) {
+      for (const row of remaining) {
+        if (!members.some(target => matches(target, row))) throw new Fault('PARTIAL', 'New processes appeared outside the reviewed force scope.');
+        this.check(job);
+        this.pending(job, project, `force stop process ${key(row)}`);
+        try { await control('force', row); }
+        catch (error) { if (error.code !== 'NOT_FOUND') throw error; }
+        this.record(job, project, String(row.pid), 'force-stop-requested');
+      }
+      await delay(200);
+    }
+    const after = await scan();
+    await this.track(project, after);
+    if (visible(after, project).length) throw new Fault('PARTIAL', 'Owned processes remain after the shutdown deadline.');
+    for (const target of targets) {
+      this.check(job);
+      if (target.shared) { this.record(job, project, `${target.project}/${target.service}`, 'shared'); continue; }
+      if (!target.running) continue;
+      if (input.force !== true) throw new Fault('PARTIAL', 'Docker stop can force termination after its deadline. Approve the listed exclusive containers with --force.');
+      this.pending(job, project, `stop container ${target.id}`);
+      await containerAction('stop', target.id, project.recipe.timeout);
+      project.stoppedContainers = [...new Set([...(project.stoppedContainers ?? []), target.id])];
+      this.record(job, project, target.id, 'stopped');
+    }
+    for (const port of portKeys) {
+      const owner = after.some(row => row.ports.some(value => `${value.address}:${value.port}` === port));
+      this.record(job, project, port, owner ? 'still-observed' : 'absent-from-authorized-scan');
+    }
+    project.state = 'sleeping';
+    this.record(job, project, project.id, 'sleeping');
+  }
+
+  async wake(job, project) {
+    if (project.state === 'running') { await this.ready(job, project); this.record(job, project, project.id, 'already-running'); return; }
+    if (!['sleeping', 'exited', 'partial'].includes(project.state)) throw new Fault('BUSY', 'Only a stopped project with a reviewed recipe can wake.');
+    if (visible(await scan(false), project).length) throw new Fault('BUSY', 'Verified processes already exist. Reconcile before relaunching.');
+    const targets = await composeTargets(project, this.store.projects());
+    for (const id of [...(project.stoppedContainers ?? [])]) {
+      this.check(job);
+      const target = targets.find(t => t.id === id && !t.shared);
+      if (!target) throw new Fault('DENIED', 'Stopped container is outside current exclusive ownership.');
+      this.pending(job, project, `start container ${id}`);
+      if (!target.running) await containerAction('start', id);
+      project.stoppedContainers = project.stoppedContainers.filter(value => value !== id);
+      this.record(job, project, id, 'started');
+    }
+    await this.launch(job, project);
+  }
+
+  async capture(job, project, input) {
+    const rows = await scan(false);
+    await this.track(project, rows);
+    const root = alive(rows, project.root);
+    const targets = await composeTargets(project, this.store.projects());
+    const backend = input.backend ?? 'criu';
+    if (!['criu', 'docker'].includes(backend)) throw new Fault('USAGE', 'Choose the criu or docker checkpoint backend.');
+    if (backend === 'criu') {
+      if (project.excluded.length || visible(rows, project).some(row => row.state === 'T' || row.state === 't')) {
+        throw new Fault('UNSUPPORTED', 'Checkpoint requires an exclusive running tree with no excluded or suspended members.');
+      }
+      if (root) {
+        const descendants = new Set([root.pid]);
+        let count;
+        do { count = descendants.size; rows.filter(row => descendants.has(row.parent)).forEach(row => descendants.add(row.pid)); }
+        while (descendants.size > count);
+        if (visible(rows, project).some(row => !descendants.has(row.pid)) || [...descendants].some(pid => !visible(rows, project).some(row => row.pid === pid))) {
+          throw new Fault('UNSUPPORTED', 'CRIU tree scope differs from the verified owned process set.');
+        }
+      }
+    }
+    const id = await checkpoint(this.state, project, root, backend, targets, id => {
+      this.check(job);
+      this.pending(job, project, `checkpoint ${id}`);
+    });
+    this.record(job, project, id, 'captured');
+  }
+
+  async restore(job, project, input) {
+    if (visible(await scan(false), project).length) throw new Fault('BUSY', 'Stop the active workload before restoring a checkpoint.');
+    const targets = await composeTargets(project, this.store.projects());
+    project.state = 'restoring';
+    const pid = await restore(this.state, project, input.checkpoint, targets, id => {
+      this.check(job);
+      this.pending(job, project, `restore checkpoint ${id}`);
+    });
+    if (pid) {
+      const rows = await scan(false);
+      const root = rows.find(row => row.pid === pid && !stopped(row));
+      if (!root) throw new Fault('PARTIAL', 'Restored root identity could not be observed.');
+      project.root = identity(root);
+      project.members = [{ ...identity(root), source: 'launched' }];
+      project.cgroup = undefined;
+      await this.track(project, rows);
+      await this.ready(job, project);
+    }
+    project.state = 'running';
+    this.record(job, project, input.checkpoint, 'restored');
+  }
+
+  async reconcile(job, ids) {
+    const rows = await scan(false);
+    const projects = ids?.length ? ids.map(id => this.store.project(id)) : this.store.projects();
+    job.op.projects = projects.map(p => p.id);
+    for (const project of projects) {
+      this.check(job);
+      await this.track(project, rows);
+      const live = visible(rows, project);
+      const interrupted = this.store.history().find(op => op.status === 'interrupted' && op.projects.includes(project.id) && op.pending);
+      if (interrupted || live.some(row => suspended(row) || ['t', 'M', '?'].includes(row.state)) || project.frozenContainers?.length) {
+        project.state = project.state === 'frozen' && live.every(suspended) ? 'frozen' : 'partial';
+      } else if (live.length) project.state = project.root ? 'running' : 'adopted';
+      else if (project.state !== 'sleeping') project.state = 'exited';
+      this.record(job, project, project.id, project.state);
+    }
+  }
+}
