@@ -39,6 +39,7 @@ export async function lineMenu() {
     const result = await waitOperation(started.id, () => {}, abort.signal);
     write(`${action} ${result.status}`);
     for (const outcome of result.outcomes.filter(item => item.status === 'failed')) write(clean(outcome.message ?? outcome.code));
+    if (result.status === 'complete') return result;
   }
   async function showListeners() {
     const ports = await request('ports');
@@ -67,20 +68,26 @@ export async function lineMenu() {
     const approved = project.candidates.filter(row => pids.has(row.pid));
     if (approved.length !== pids.size) { write('Select only the listed candidate PIDs.'); return; }
     const path = await ask('Optional JSON restart recipe (Enter skips)');
-    await execute('adopt', { cwd: project.cwd, confirm: true, members: approved.map(identity), recipe: path ? await loadRecipe(path) : undefined },
+    const id = project.state === 'discovered' ? undefined : project.id;
+    return execute('adopt', { id, cwd: project.cwd, confirm: true, members: approved.map(identity), recipe: path ? await loadRecipe(path) : undefined },
       `${clean(project.name)}  PID ${approved.map(row => row.pid).join(', ')}`);
   }
   async function inspect(project) {
+    let id = project.id;
     while (!abort.signal.aborted) {
-      const live = await request('inspect', { id: project.id });
+      const live = await request('inspect', { id });
       write(clean(`${live.name} [${live.state}]  TCP ${endpoints(live.ports)}  ${live.id}`));
       for (const row of live.processes) write(clean(`PID ${row.pid}  TCP ${endpoints(row.ports)}  ${row.image ?? ''}`));
       const value = await ask('f Freeze   u Resume   z Sleep   w Wake   a Review candidates   r Refresh   b Back   q Quit');
       if (value === 'q' || value === undefined) { detach(); return; }
       if (value === 'b' || value === '') return;
-      if (value === 'a' || (value === 'f' && live.state === 'discovered')) { await adopt(live); continue; }
+      if (value === 'a' || (value === 'f' && live.state === 'discovered')) {
+        const adopted = await adopt(live);
+        if (adopted) [id] = adopted.projects;
+        continue;
+      }
       if (!Object.hasOwn(actions, value)) continue;
-      await execute(actions[value], { ids: [project.id] }, `${clean(live.name)}  ${live.processCount} process(es)  TCP ${endpoints(live.ports)}`);
+      await execute(actions[value], { ids: [id] }, `${clean(live.name)}  ${live.processCount} process(es)  TCP ${endpoints(live.ports)}`);
     }
   }
   function renderProjects(projects) {

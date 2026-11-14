@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -20,9 +20,12 @@ test('native CRIU round trip retains a real process checkpoint', {
 }, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'pf-criu-'));
   const env = { ...process.env, PROJECTFREEZE_HOME: join(dir, 'state') };
-  const run = async (...args) => {
+  const call = async (...args) => {
     const result = await exec(process.execPath, [bin, '--json', ...args], { env, timeout: 120000 }).catch(error => error);
-    const reply = JSON.parse(result.stdout);
+    return JSON.parse(result.stdout);
+  };
+  const run = async (...args) => {
+    const reply = await call(...args);
     assert.equal(reply.ok, true, JSON.stringify(reply));
     return reply.data;
   };
@@ -32,6 +35,18 @@ test('native CRIU round trip retains a real process checkpoint', {
     const capture = await run('checkpoint', project);
     const id = capture.outcomes.find(o => o.status === 'captured').target;
     await run('sleep', project);
+    const captureDir = join(env.PROJECTFREEZE_HOME, `checkpoint-${id}`);
+    const metadata = join(captureDir, 'manifest.json');
+    const manifest = JSON.parse(await readFile(metadata, 'utf8'));
+    const image = join(captureDir, Object.keys(manifest.files)[0]);
+    const original = await readFile(image);
+    await writeFile(image, Buffer.concat([original, Buffer.from([0])]));
+    const rejected = await call('restore', project, '--checkpoint', id);
+    assert.equal(rejected.data.outcomes[0].code, 'DENIED');
+    assert.equal((await run('inspect', project)).state, 'sleeping');
+    assert.equal((await readFile(image)).length, original.length + 1);
+    assert.deepEqual(JSON.parse(await readFile(metadata, 'utf8')), manifest);
+    await writeFile(image, original);
     await run('restore', project, '--checkpoint', id);
     assert.equal((await run('inspect', project)).processCount, 1);
     await run('sleep', project);

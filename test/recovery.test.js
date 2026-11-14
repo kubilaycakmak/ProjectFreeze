@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,6 +8,10 @@ import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { projectId } from '../src/discovery.js';
+import { Engine } from '../src/engine.js';
+import { bootId } from '../src/platform.js';
+import { Store } from '../src/store.js';
 
 const exec = promisify(execFile);
 const bin = fileURLToPath(new URL('../bin/projectfreeze.js', import.meta.url));
@@ -20,6 +25,37 @@ async function until(fn, message = 'Expected state was not observed.', timeout =
   } while (Date.now() < deadline);
   assert.fail(message);
 }
+
+test('an interrupted restore blocks relaunch until the effect is cleared', async t => {
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), 'pf-restore-recovery-')));
+  const store = new Store(cwd);
+  t.after(async () => {
+    store.close();
+    await rm(cwd, { recursive: true, force: true, maxRetries: 5 });
+  });
+  const id = projectId(cwd);
+  const operation = randomUUID();
+  const effect = { operation, kind: 'restore', backend: 'criu', boot: await bootId() };
+  store.commit({ id, cwd, members: [], excluded: [], state: 'restoring', uncertainEffect: effect },
+    { id: operation, action: 'restore', projects: [id], status: 'running', started: new Date().toISOString(), pending: 'restore checkpoint' });
+  const engine = new Engine(store, cwd);
+  assert.equal(store.operation(operation).status, 'interrupted');
+  async function run(action, input) {
+    const { id: operationId } = await engine.dispatch(action, input);
+    await until(() => !engine.current);
+    return store.operation(operationId);
+  }
+  const unresolved = await run('reconcile', { ids: [id] });
+  assert.equal(unresolved.outcomes[0].code, 'PARTIAL');
+  assert.equal(store.project(id).state, 'partial');
+  assert.deepEqual(store.project(id).uncertainEffect, effect);
+  const blocked = await run('run', { recipe: { cwd, argv: [process.execPath, '--version'] } });
+  assert.equal(blocked.outcomes[0].code, 'BUSY');
+  store.save({ ...store.project(id), uncertainEffect: { ...effect, boot: randomUUID() } });
+  assert.equal((await run('reconcile', { ids: [id] })).status, 'complete');
+  assert.equal(store.project(id).state, 'exited');
+  assert.equal(store.project(id).uncertainEffect, undefined);
+});
 
 test('restart evidence and interrupted shutdown survive a daemon crash', { timeout: 100000 }, async t => {
   const cwd = await realpath(await mkdtemp(join(tmpdir(), 'pf-recovery-')));

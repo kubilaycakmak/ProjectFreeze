@@ -10,7 +10,7 @@ With no arguments, a terminal session opens the interactive interface. A redirec
 | `listeners` | List TCP endpoints and PIDs for locally observable processes. Unassigned entries are read-only. |
 | `ports` | List local TCP listeners and bound UDP sockets. Reports a PID when ownership is available. |
 | `services` | List running services visible to the local Windows SCM, systemd system and user managers, or the current macOS launchd domain. |
-| `adopt --cwd DIR --member PID@BIRTH@BOOT --confirm` | Approve exact identities from current discovery. Repeat `--member` and `--exclude` as needed. `--recipe FILE` supplies restart settings. |
+| `adopt [PROJECT] --cwd DIR --member PID@BIRTH@BOOT --confirm` | Approve exact identities from current discovery. An optional registered project ID sets the destination. Repeat `--member` and `--exclude` as needed. `--recipe FILE` supplies restart settings. |
 | `run --cwd DIR -- EXECUTABLE ARG...` | Launch literal arguments. Use a fully qualified executable or an absolute PATH entry. |
 | `run --recipe FILE` | Launch a reviewed JSON recipe. |
 | `freeze PROJECT...`, `resume PROJECT...` | Suspend owned execution or release recorded suspensions. |
@@ -28,11 +28,15 @@ The live menu rescans on entry and periodically. Tab or Left/Right switches betw
 
 Press `?` to open the grouped shortcut reference. In a narrow terminal, scroll with the arrow keys or Page Up/Down. Home and End jump to the top and bottom. Press `?` again or Esc to return to the current view. When the CLI entry point is observable, Projects omits ProjectFreeze CLI processes from other installations. Their listening sockets remain visible in Ports.
 
+Project details show the ownership confidence, declared dependencies, registered services and sharing policies, and recent incomplete operations. Press Space in project details to collapse or expand the process tree. From the project list, Space toggles selection instead.
+
 Select one owned native project and press `k` to review force termination. The preview lists the exact process IDs. Press Enter to continue, then type `KILL` and press Enter again to authorize SIGKILL on Linux and macOS or TerminateProcess on Windows. Esc cancels either prompt. Force termination skips graceful shutdown and suppresses automatic restart. Use `w` to start again when a restart recipe is available. ProjectFreeze rejects a changed process set and directs projects with registered services or active dependents to their service shutdown workflow.
 
 ## Test Sleep and Wake
 
 Use the included `examples/stream-test.mjs` to create a launch recipe and see the process identity at the client. From a dedicated test directory, run `node /path/to/stream-test.mjs --recipe stream.recipe.json 8788`. Press `l`, enter the recipe path, and confirm with Enter. In another terminal run `curl -N http://127.0.0.1:8788/stream` (`curl.exe` on Windows). Select the project, press `z`, and confirm. The stream ends and the listener disappears. Press `w`, confirm, and reconnect with curl to see the new PID. The fixture includes a graceful shutdown command. Choose an unused port if `8788` is occupied.
+
+Run `node examples/demo.js` from the package directory for an isolated loopback demonstration of discovery, adoption, freeze, resume, sleep, and wake. On a Linux host where CRIU works with the current user's permissions, run `node examples/demo.js --checkpoint` to capture a disposable workload, stop it, and restore it. Both demos use temporary state and clean up their own workloads.
 
 | Exit code | Meaning |
 | --- | --- |
@@ -52,6 +56,7 @@ Use the included `examples/stream-test.mjs` to create a launch recipe and see th
 ```json
 {
   "cwd": "/absolute/project/path",
+  "instance": "web",
   "argv": ["node", "server.js"],
   "env": ["APP_DATABASE_URL"],
   "dependencies": [],
@@ -63,6 +68,8 @@ Use the included `examples/stream-test.mjs` to create a launch recipe and see th
 ```
 
 `argv` and `stop` are literal argument arrays. For shell scripts select the shell explicitly and supply its arguments. Windows recipes can call `cmd.exe` or `powershell.exe` explicitly to interpret shell commands. Keep secret values out of literal arguments and recipe files. `env` names refer to values in the daemon environment at launch. Start or restart the daemon from an environment containing the required values. The daemon passes a small platform environment and the listed references to workloads. Output streams of managed launches are discarded to keep secret-bearing logs out of state. Configure application logging at the workload boundary.
+
+Set `instance` to give a workload its own durable project ID inside a shared directory. For example, `web` and `worker` can use separate recipes in one checkout. Recipes without an instance keep the directory's original ID. To adopt into a named project for the first time, include its instance in the reviewed recipe. To add processes to an existing project, pass its ID to `adopt`, or open that project and press `a`. Approve only the identities that belong to that workload.
 
 `ready` connects to a loopback TCP port observed on an owned process. `stop` should implement application-specific graceful shutdown. Without `stop`, POSIX uses SIGTERM. Windows requires `stop` or specifically approved `--force` termination. `restart: "on-failure"` permits up to three retries while the launch supervisor remains available. Linux may specify `cgroup` as an existing delegated cgroup v2 parent directory. `containers` entries name a Compose `project`, `service`, and explicit `shared` boolean. Exclusive services must be existing containers with matching Compose labels and restart policy `no`.
 
@@ -88,4 +95,4 @@ Register and authorize platform resources through the operating system before gi
 }
 ```
 
-The stdio server implements initialization, `tools/list`, `tools/call`, cancellation, and progress notifications for operations requested with a progress token. Tool schemas are returned by `tools/list`. Tool output uses the CLI data shapes and the same daemon ownership checks. The MCP host grants local permissions to its process and must use its approval UI when requesting ambiguous adoption, launching code, or forcing shutdown. See the [MCP stdio transport specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports).
+The stdio server implements initialization, `tools/list`, `tools/call`, cancellation, and progress notifications for operations requested with a progress token. Tool schemas are returned by `tools/list`. The `ports` and `services` tools expose the same read-only inventory as their CLI commands. Tool output uses the CLI data shapes and the same daemon ownership checks. The MCP host grants local permissions to its process and must use its approval UI when requesting ambiguous adoption, launching code, or forcing shutdown. See the [MCP stdio transport specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports).

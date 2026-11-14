@@ -7,7 +7,7 @@ const id = { type: 'string' };
 const ids = { type: 'array', items: id, minItems: 1, maxItems: 32 };
 const identity = { type: 'object', properties: { pid: { type: 'integer', minimum: 2 }, birth: id, boot: id }, required: ['pid', 'birth', 'boot'] };
 const recipe = { type: 'object', properties: {
-  argv: { type: 'array', items: id, minItems: 1 }, cwd: id, env: { type: 'array', items: id }, dependencies: ids,
+  argv: { type: 'array', items: id, minItems: 1 }, cwd: id, instance: id, env: { type: 'array', items: id }, dependencies: ids,
   stop: { type: 'array', items: id }, timeout: { type: 'integer', minimum: 100, maximum: 120000 },
   ready: { type: 'object', properties: { address: { enum: ['127.0.0.1', '::1'] }, port: { type: 'integer', minimum: 1, maximum: 65535 } }, required: ['address', 'port'] },
   restart: { enum: ['never', 'on-failure'] }, cgroup: id,
@@ -25,12 +25,14 @@ const tools = [
   tool('list', 'List projects and live resources in local authorized scope.'),
   tool('discover', 'Find candidate identities and evidence for explicit adoption.'),
   tool('listeners', 'List TCP listeners of locally observable processes, including unassigned listeners.'),
+  tool('ports', 'List local TCP listeners and bound UDP sockets from OS tables.'),
+  tool('services', 'List running services visible to the local service managers.'),
   tool('inspect', 'Inspect resource identities, candidates, and recent operations.', { id }, ['id']),
   tool('history', 'Read recent durable operations.'),
   tool('operation', 'Read one operation and its per-resource outcomes.', { id }, ['id']),
   tool('cancel', 'Request cancellation at the next resource boundary.', { id }, ['id'], true),
   tool('adopt', 'Associate reviewed identities with a project. Obtain user approval for the exact set.',
-    { cwd: id, members: { type: 'array', items: identity, minItems: 1 }, exclude: { type: 'array', items: identity }, confirm: { const: true }, recipe }, ['cwd', 'members', 'confirm'], true),
+    { id, cwd: id, members: { type: 'array', items: identity, minItems: 1 }, exclude: { type: 'array', items: identity }, confirm: { const: true }, recipe }, ['cwd', 'members', 'confirm'], true),
   tool('run', 'Launch a reviewed local executable with literal arguments.', { recipe }, ['recipe'], true),
   tool('freeze', 'Suspend owned resources and preserve memory and bound sockets.', { ids }, ['ids'], true),
   tool('resume', 'Release suspensions recorded by ProjectFreeze.', { ids }, ['ids'], true),

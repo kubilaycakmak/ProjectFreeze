@@ -41,6 +41,7 @@ const helpSections = [
   ['Workloads', [
     ['l', 'Launch a saved recipe'],
     ['a', 'Review process ownership'],
+    ['Space', 'Expand or collapse the process tree in details'],
     ['f', 'Freeze processes'],
     ['u', 'Resume frozen processes'],
     ['z', 'Sleep gracefully'],
@@ -233,7 +234,7 @@ export async function interactive() {
     return lines;
   }
 
-  function projectPanel(project) {
+  function projectPanel({ project, collapsed }) {
     const rows = project.processes;
     const children = new Map();
     for (const row of rows) {
@@ -249,16 +250,35 @@ export async function interactive() {
       for (const child of children.get(row.pid) ?? []) branch(child, indent + 1);
     }
     const pids = new Set(rows.map(row => row.pid));
-    rows.filter(row => !pids.has(row.parent)).forEach(row => branch(row, 0));
-    rows.forEach(row => branch(row, 0));
+    if (!collapsed) {
+      rows.filter(row => !pids.has(row.parent)).forEach(row => branch(row, 0));
+      rows.forEach(row => branch(row, 0));
+    }
+    const ownership = { observed: 'Review required', 'reviewed-or-contained': 'Reviewed or contained', registered: 'Registered' };
+    const dependencies = project.dependencies.map(id => {
+      const dependency = projects.find(row => row.id === id);
+      return `  ${dependency ? `${dependency.name} [${dependency.state}]  ` : ''}${id}`;
+    });
+    const scope = target => target.shared ? 'shared' : 'exclusive';
+    const resources = [
+      ...project.containers.map(target => `  Compose ${target.project}/${target.service} (${scope(target)})`),
+      ...project.systemd.map(target => `  systemd ${target.unit} (${scope(target)})`),
+      ...project.supervisors.map(target => `  ${target.kind} ${target.name} (${scope(target)})  ${target.error?.message ?? target.state ?? ''}`)
+    ];
+    const operations = (project.operations ?? []).filter(item => item.status !== 'complete').slice(0, 3)
+      .map(item => `  ${item.action} [${item.status}]  ${item.pending ?? item.outcomes.find(row => row.status === 'failed')?.message ?? item.id}`);
     const actionGuide = Object.entries(shortcuts).filter(([, action]) => available(project, action))
       .map(([key, action]) => `${key} ${mutations[action][0]}`);
     if (project.candidates?.length) actionGuide.unshift('a Review ownership');
-    return [`${project.name}  [${project.state}]`, project.cwd, '',
+    return [`${project.name}  [${project.state}]`, project.cwd, `Ownership: ${ownership[project.confidence] ?? 'Unknown'}  ·  ${project.id}`, '',
       `TCP listeners: ${project.ports.map(endpoint).join(', ') || 'none'}`,
       `${project.processCount} processes   CPU ${project.cpuPercent?.toFixed(1) ?? '—'}%   RSS ${project.rssSum === undefined ? '—' : `${(project.rssSum / 2 ** 20).toFixed(1)} MiB`}`,
       `Restart recipe: ${project.restart?.configured ? 'saved' : 'unavailable'}   Candidates: ${project.candidates?.length ?? 0}`, '',
-      actionGuide.join('   '), '', ...branches];
+      actionGuide.join('   '), '',
+      ...(dependencies.length ? ['Dependencies', ...dependencies, ''] : []),
+      ...(resources.length ? ['Registered resources', ...resources, ''] : []),
+      ...(operations.length ? ['Recent incomplete operations', ...operations, ''] : []),
+      ...(rows.length ? [`Space ${collapsed ? 'Expand' : 'Collapse'} process tree (${rows.length})`, ...branches] : [])];
   }
 
   function panelLines(budget) {
@@ -267,7 +287,7 @@ export async function interactive() {
       dialog?.kind === 'confirm' ? [dialog.title, '', ...dialog.lines] :
       dialog?.kind === 'adopt' ? ['Review ownership', 'Space toggles a process. Enter continues.', '',
         ...dialog.rows.map(row => `${dialog.approved.has(processKey(row)) ? '[x]' : '[ ]'} PID ${row.pid}  ${basename(row.image ?? '')}  TCP ${ports(row.ports) || '—'}`)] :
-      detail?.project ? projectPanel(detail.project) : detail?.listener ? [`${detail.listener.protocol.toUpperCase()} ${endpoint(detail.listener)}`, '', `PID ${detail.listener.pid ?? 'unknown'}`, detail.listener.image ?? '',
+      detail?.project ? projectPanel(detail) : detail?.listener ? [`${detail.listener.protocol.toUpperCase()} ${endpoint(detail.listener)}`, '', `PID ${detail.listener.pid ?? 'unknown'}`, detail.listener.image ?? '',
         `Project: ${detail.listener.name ?? 'Unassigned'}`, `Scope: ${detail.listener.scope}`, '', ...(detail.listener.project ? ['Enter Open project'] : [])] :
       detail?.service ? [detail.service.name, detail.service.description ?? '', '', detail.service.manager, `PID ${detail.service.pid ?? 'unknown'}`, 'Read-only'] :
       [`${detail?.op.action}  [${detail?.op.status}]`, detail?.op.id, '', ...(detail?.op.outcomes ?? []).map(row => `${row.status}  ${row.target}  ${row.message ?? ''}`)];
@@ -348,7 +368,9 @@ export async function interactive() {
       operation = { ...started, action };
       const result = await waitOperation(started.id, item => { operation = item; draw(); }, scope.signal);
       status = `${mutations[action]?.[0] ?? action} ${result.status}${result.outcomes.filter(row => row.status === 'failed').map(row => `  ${row.message}`).join('')}`;
-      return result.status === 'complete';
+      if (result.status !== 'complete') return false;
+      if (action === 'adopt') detail = undefined;
+      return result;
     } catch (error) { status = problem(error).message; return false; }
     finally { operation = undefined; void refresh(); }
   }
@@ -405,11 +427,14 @@ export async function interactive() {
   async function finishAdoption(panel, recipe) {
     const members = panel.rows.filter(row => panel.approved.has(processKey(row)));
     confirm(`Adopt ${members.length} reviewed process(es)`, members.map(row => `PID ${row.pid}  TCP ${ports(row.ports) || '—'}  ${row.image ?? ''}`), async () => {
-      const adopted = await act('adopt', { cwd: panel.project.cwd, confirm: true, members: members.map(identity), recipe });
-      if (adopted && panel.after && !ended) {
-        projects = await request('list');
-        await panel.after();
-      }
+      const id = panel.project.state === 'discovered' ? undefined : panel.project.id;
+      const adopted = await act('adopt', { id, cwd: panel.project.cwd, confirm: true, members: members.map(identity), recipe });
+      if (!adopted || ended) return;
+      const [adoptedId] = adopted.projects;
+      projects = await request('list');
+      viewKey = adoptedId;
+      inspectProject(adoptedId);
+      if (panel.after) await panel.after(adoptedId);
     });
   }
 
@@ -417,7 +442,7 @@ export async function interactive() {
     const targets = ids.map(id => projects.find(row => row.id === id)).filter(Boolean);
     const observed = targets.find(project => project.state === 'discovered');
     if (!observed) { review('freeze', targets); return; }
-    await adopt(observed, () => freeze(ids));
+    await adopt(observed, adoptedId => freeze(ids.map(id => id === observed.id ? adoptedId : id)));
   }
 
   async function loadRecipe(path) {
@@ -493,6 +518,7 @@ export async function interactive() {
     }
     if (detail) {
       if (movement) detail.scroll = Math.max(0, detail.scroll + movement);
+      if (name === 'space' && detail.project) detail.collapsed = !detail.collapsed;
       if (name === 'return' && detail.listener?.project) inspectProject(detail.listener.project);
     } else {
       if (name === 'left' || name === 'right') { switchTab(tab + (name === 'left' ? -1 : 1)); return; }

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { createConnection, createServer } from 'node:net';
 import { mkdir, mkdtemp, readFile, realpath, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -75,6 +76,9 @@ test('real ownership, lifecycle, IPC authentication and MCP', { timeout: 130000 
   const stale = await run(['adopt', '--cwd', project, '--member', `${root.pid}@1@${root.boot}`, '--confirm'], true);
   assert.equal(stale.data.status, 'failed');
   assert.equal(stale.data.outcomes[0].code, 'DENIED');
+  const previousBoot = await run(['adopt', '--cwd', project, '--member', `${root.pid}@${root.birth}@${randomUUID()}`, '--confirm'], true);
+  assert.equal(previousBoot.data.outcomes[0].code, 'DENIED');
+  assert.equal(await healthy(url), true);
   const recipe = join(base, 'recipe.json');
   await writeFile(recipe, JSON.stringify({ cwd: project, argv: [process.execPath, join(project, 'server.mjs'), 'serve', String(port)],
     stop: [process.execPath, join(project, 'server.mjs'), 'stop'], ready: { address: '127.0.0.1', port }, timeout: 12000 }));
@@ -135,9 +139,14 @@ test('real ownership, lifecycle, IPC authentication and MCP', { timeout: 130000 
     assert.equal(initialization.serverInfo.version, manifest.version);
     send(undefined, 'notifications/initialized');
     send(2, 'tools/list');
-    assert.ok((await eventually(() => messages.find(m => m.id === 2), 'list MCP tools')).result.tools.some(tool => tool.name === 'freeze'));
+    const { result: inventory } = await eventually(() => messages.find(m => m.id === 2), 'list MCP tools');
+    assert.ok(inventory.tools.some(tool => tool.name === 'freeze'));
+    for (const name of ['ports', 'services']) assert.equal(inventory.tools.find(tool => tool.name === name).annotations.readOnlyHint, true);
     send(3, 'tools/call', { name: 'reconcile', arguments: { ids: [id] }, _meta: { progressToken: 'native' } });
     assert.equal((await eventually(() => messages.find(m => m.id === 3), 'call MCP tool')).result.structuredContent.data.status, 'complete');
     assert.ok(messages.some(m => m.method === 'notifications/progress'));
+    send(4, 'tools/call', { name: 'ports', arguments: {} });
+    const { result: ports } = await eventually(() => messages.find(m => m.id === 4), 'list ports through MCP');
+    assert.ok(ports.structuredContent.data.some(row => row.protocol === 'tcp' && row.port === foreignPort));
   } finally { child.stdin.end(); lines.close(); }
 });
