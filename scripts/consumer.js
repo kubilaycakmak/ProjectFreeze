@@ -17,14 +17,18 @@ const npmArgs = args => windows ? ['/d', '/c', 'npm', ...args] : args;
 const install = ['install', '--ignore-scripts', '--offline', '--no-audit', '--no-fund'];
 const npmRun = args => execFileSync(npm, npmArgs(args), options);
 const npmCli = windows ? join(resolve(process.execPath, '..'), 'node_modules', 'npm', 'bin', 'npm-cli.js') : undefined;
-const cli = join(base, 'node_modules', '@kubilaycakmak', 'projectfreeze', 'bin', 'projectfreeze.js');
-const run = args => JSON.parse(execFileSync(process.execPath, [cli, '--json', ...args], options).toString());
+const previous = process.env.PF_PREVIOUS_TARBALL ? mkdtempSync(join(base, 'previous ')) : undefined;
+let prefix = previous ?? base;
+const run = args => {
+  const cli = join(prefix, 'node_modules', '@kubilaycakmak', 'projectfreeze', 'bin', 'projectfreeze.js');
+  return JSON.parse(execFileSync(process.execPath, [cli, '--json', ...args], options).toString());
+};
 const finish = join(base, 'finish');
 let id;
 let pid;
 const probe = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
 try {
-  npmRun([...install, process.env.PF_PREVIOUS_TARBALL || path]);
+  execFileSync(npm, npmArgs([...install, process.env.PF_PREVIOUS_TARBALL || path]), { ...options, cwd: prefix });
   assert.equal(run(['list']).ok, true);
   assert.equal(run(['daemon', 'status']).data.protocol, 1);
   const workload = join(base, 'worker.mjs');
@@ -48,6 +52,7 @@ try {
     execFileSync(npm, npmArgs([...install, './candidate.tgz']), { ...options, cwd: interruptedDir });
   } finally { rmSync(interruptedDir, { recursive: true, force: true, maxRetries: 6 }); }
   assert.equal(probe(), true);
+  prefix = base;
   npmRun([...install, path]);
   assert.equal(run(['inspect', id]).data.processes[0].pid, pid);
   assert.equal(run(['daemon', 'stop']).ok, true);

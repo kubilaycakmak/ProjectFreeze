@@ -330,8 +330,8 @@ export class Engine {
     const targets = await composeTargets(project, all);
     const units = await serviceTargets(project, all);
     const external = await observeSupervisors(project, all, await scan(false));
-    if (external.some(target => !target.shared && target.kind === 'task' && target.active)) {
-      throw new Fault('BUSY', 'A scheduled task is running or queued. Wait for it to complete before freezing.');
+    if (external.some(target => !target.shared && (target.kind === 'task' ? target.active : !['Running', 'Paused', 'Stopped'].includes(target.state)))) {
+      throw new Fault('BUSY', 'A scheduled task or service is active or transitioning. Wait for a stable state before freezing.');
     }
     project.state = 'freezing';
     project.frozenContainers ??= [];
@@ -378,7 +378,7 @@ export class Engine {
           throw new Fault('PARTIAL', 'A user systemd unit changed state during the freeze barrier.');
         }
         const current = await observeSupervisors(project, all, rows);
-        if (current.some(t => !t.shared && (t.state === 'Running' || t.enabled || t.active))) {
+        if (current.some(t => !t.shared && (t.kind === 'task' ? t.enabled || t.active : !['Paused', 'Stopped'].includes(t.state)))) {
           throw new Fault('PARTIAL', 'A supervised workload or task remains active.');
         }
         project.state = 'frozen';
@@ -423,8 +423,9 @@ export class Engine {
     const after = visible(await scan(false), project);
     const currentTargets = await composeTargets(project, this.store.projects());
     const currentUnits = await serviceTargets(project, this.store.projects());
+    const currentExternal = await observeSupervisors(project, this.store.projects(), await scan(false));
     if (after.some(row => suspended(row) || ['t', 'M', '?'].includes(row.state)) || currentTargets.some(t => !t.shared && t.paused) ||
-        currentUnits.some(unit => unit.state?.FreezerState === 'frozen')) {
+        currentUnits.some(unit => unit.state?.FreezerState === 'frozen') || currentExternal.some(target => !target.shared && target.state === 'Paused')) {
       throw new Fault('PARTIAL', 'A member remains externally suspended or its execution state cannot be verified.');
     }
     if (after.length) await this.ready(job, project);
@@ -451,7 +452,9 @@ export class Engine {
     const before = await scan();
     await this.track(project, before);
     const external = await observeSupervisors(project, all, before);
-    if (external.some(t => !t.shared && (t.state === 'Paused' || t.active))) throw new Fault('BUSY', 'Resume paused services and wait for scheduled tasks before shutdown.');
+    if (external.some(t => !t.shared && (t.kind === 'task' ? t.active : !['Running', 'Stopped'].includes(t.state)))) {
+      throw new Fault('BUSY', 'Resume paused services and wait for active tasks or service transitions before shutdown.');
+    }
     const externalPids = new Set(external.map(t => t.pid));
     const members = visible(before, project).filter(row => !externalPids.has(row.pid));
     if (members.some(suspended)) throw new Fault('BUSY', 'Resume the project before graceful shutdown.');

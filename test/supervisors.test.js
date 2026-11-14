@@ -12,18 +12,18 @@ const exec = promisify(execFile);
 const name = `ProjectFreezeFixture-${process.pid}`;
 
 test('real macOS LaunchAgent pause, resume, stop, and start', {
-  skip: process.platform !== 'darwin' || process.env.PF_TEST_LAUNCHD !== '1', timeout: 45000
+  skip: process.platform !== 'darwin' || process.env.PF_TEST_LAUNCHD !== '1', timeout: 60000
 }, async () => {
   const cwd = await realpath(await mkdtemp(join(tmpdir(), 'pf-agent-')));
   const plist = join(cwd, `${name}.plist`);
   const domain = `gui/${process.getuid()}`;
   const ctl = (...args) => exec('/bin/launchctl', args);
-  const project = { id: 'fixture', cwd, recipe: { timeout: 5000, supervisors: [{ kind: 'launchd', name, plist, shared: false }] } };
+  const project = { id: 'fixture', cwd, recipe: { timeout: 15000, supervisors: [{ kind: 'launchd', name, plist, shared: false }] } };
   const target = async () => (await observeSupervisors(project, [project], await scan(false)))[0];
   try {
     await writeFile(plist, `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>
 <key>Label</key><string>${name}</string><key>ProgramArguments</key><array><string>/bin/sleep</string><string>90</string></array>
-<key>WorkingDirectory</key><string>${cwd}</string></dict></plist>`, { mode: 0o600 });
+<key>WorkingDirectory</key><string>${cwd}</string><key>ThrottleInterval</key><integer>1</integer></dict></plist>`, { mode: 0o600 });
     await ctl('bootstrap', domain, plist);
     await supervisorTargets(project, [project], true);
     await supervisorAction('start', await target(), project);

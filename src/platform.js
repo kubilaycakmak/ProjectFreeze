@@ -170,7 +170,8 @@ export async function scan(full = true, stagedPid) {
     }
     if (full) await linuxPorts(rows);
   } else rows = await nonLinuxRows(boot, full);
-  rows = rows.filter(row => row.pid > 1 && !ignored(row.pid) && (row.pid === stagedPid || row.image !== helper) && row.projectHint !== cliPath);
+  rows = rows.filter(row => row.pid > 1 && !ignored(row.pid) && (row.pid === stagedPid ||
+    (row.image !== helper && !/^launcher-[a-f0-9]{64}\.exe$/i.test(basename(row.image ?? '')))) && row.projectHint !== cliPath);
   if (full) {
     const time = performance.now();
     const current = new Set();
