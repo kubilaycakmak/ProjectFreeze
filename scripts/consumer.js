@@ -6,9 +6,12 @@ import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import assert from 'node:assert/strict';
 
-const base = mkdtempSync(join(tmpdir(), 'pf consumer '));
-const path = process.argv[2] ? resolve(process.argv[2]) : resolve('dist', readdirSync('dist').find(file => file.endsWith('.tgz')));
+const candidates = process.argv[2] ? [process.argv[2]] : readdirSync('dist').filter(file => file.endsWith('.tgz')).map(file => join('dist', file));
+if (candidates.length !== 1) throw new Error('Pass the exact tarball path to scripts/consumer.js.');
+const path = resolve(candidates[0]);
 assert.equal(createHash('sha256').update(readFileSync(path)).digest('hex'), readFileSync(`${path}.sha256`, 'utf8').split(' ')[0]);
+const previousTarball = process.env.PF_PREVIOUS_TARBALL ? resolve(process.env.PF_PREVIOUS_TARBALL) : undefined;
+const base = mkdtempSync(join(tmpdir(), 'pf consumer '));
 const env = { ...process.env, PROJECTFREEZE_HOME: join(base, 'state with spaces') };
 const windows = process.platform === 'win32';
 const npm = windows ? process.env.ComSpec : 'npm';
@@ -17,7 +20,7 @@ const npmArgs = args => windows ? ['/d', '/c', 'npm', ...args] : args;
 const install = ['install', '--ignore-scripts', '--offline', '--no-audit', '--no-fund'];
 const npmRun = args => execFileSync(npm, npmArgs(args), options);
 const npmCli = windows ? join(resolve(process.execPath, '..'), 'node_modules', 'npm', 'bin', 'npm-cli.js') : undefined;
-const previous = process.env.PF_PREVIOUS_TARBALL ? mkdtempSync(join(base, 'previous ')) : undefined;
+const previous = previousTarball ? mkdtempSync(join(base, 'previous ')) : undefined;
 let prefix = previous ?? base;
 const run = args => {
   const cli = join(prefix, 'node_modules', '@kubilaycakmak', 'projectfreeze', 'bin', 'projectfreeze.js');
@@ -28,7 +31,7 @@ let id;
 let pid;
 const probe = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
 try {
-  execFileSync(npm, npmArgs([...install, process.env.PF_PREVIOUS_TARBALL || path]), { ...options, cwd: prefix });
+  execFileSync(npm, npmArgs([...install, previousTarball ?? path]), { ...options, cwd: prefix });
   assert.equal(run(['list']).ok, true);
   assert.equal(run(['daemon', 'status']).data.protocol, 1);
   const workload = join(base, 'worker.mjs');

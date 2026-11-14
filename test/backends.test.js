@@ -48,7 +48,6 @@ test('real Compose service identity, pause, sharing, and shutdown', {
   const compose = (...args) => exec('docker', ['--host', 'unix:///var/run/docker.sock', 'compose', '--project-name', projectName, ...args], { cwd, timeout: 30000 });
   const service = { project: projectName, service: 'worker', shared: false };
   const project = { id: 'fixture', cwd, recipe: { containers: [service] } };
-  let checkpointDir;
   try {
     const network = process.env.PF_TEST_DOCKER_CHECKPOINT === '1' ? 'host' : 'none';
     await writeFile(join(cwd, 'compose.yaml'), `services:\n  worker:\n    image: busybox:1.37\n    command: ["sh", "-c", "trap 'exit 0' TERM; while true; do echo alive; sleep 0.2; done"]\n    restart: "no"\n    network_mode: ${network}\n`);
@@ -69,18 +68,7 @@ test('real Compose service identity, pause, sharing, and shutdown', {
     if (process.env.PF_TEST_DOCKER_CHECKPOINT === '1') {
       const id = await checkpoint(cwd, project, undefined, 'docker', await composeTargets(project, [project]), () => {});
       await containerAction('stop', running.id, 1000);
-      const root = (await exec('docker', ['info', '--format', '{{.DockerRootDir}}'])).stdout.trim();
-      checkpointDir = join(root, 'containers', running.id, 'checkpoints', id);
-      try { await restore(cwd, project, id, await composeTargets(project, [project]), () => {}); }
-      catch (error) {
-        if (process.env.GITHUB_ACTIONS === 'true') {
-          const direct = await exec('docker', ['inspect', '--format', '{{json .State}}', running.id]).catch(failure => failure);
-          const journal = await exec('journalctl', ['-u', 'docker', '--no-pager', '-n', '25']).catch(() => ({ stdout: '' }));
-          const logs = await exec('/usr/bin/find', [checkpointDir, '-name', '*.log', '-print', '-exec', 'tail', '-n', '15', '{}', ';']).catch(() => ({ stdout: '' }));
-          console.error(direct.stdout, direct.stderr, journal.stdout, logs.stdout);
-        }
-        throw error;
-      }
+      await restore(cwd, project, id, await composeTargets(project, [project]), () => {});
       assert.equal((await composeTargets(project, [project]))[0].running, true);
     }
   } finally {

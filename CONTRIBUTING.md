@@ -1,21 +1,32 @@
 # Contributing and release verification
 
-Use Node 24 LTS or Node 26 and Git. Build the local helper before running tests. On Linux use a C compiler with Linux headers and the GNU libc development files. On macOS use Xcode Command Line Tools. On Windows the build uses the in-box .NET Framework compiler. Consumers install a tarball with the matching helper included and run no install scripts. The Linux helper links to the host libc, and Linux compatibility follows the tested Ubuntu baseline.
+Use Node.js 24.11.0 or later in the 24.x series, or Node.js 26.x, with npm and Git. Build the local helper before running tests. On Linux use a C compiler with Linux headers and the GNU libc development files. On macOS use Xcode Command Line Tools. An ordinary Windows build uses the in-box .NET Framework compiler. For reproducibility checks on Windows, point `PF_DOTNET_SDK` at an installed SDK directory containing Roslyn and use the same compiler version for both builds.
 
 ```sh
 npm run build:native
 npm test
 npm run demo
-node scripts/package.js
-node scripts/consumer.js
 ```
 
 Use focused branches and link the relevant issue in each PR. Test new control actions against real owned fixtures and verify unrelated processes remain untouched. Tests must stop their workloads through the same identity or a fixture-specific shutdown signal.
 
-GitHub Actions builds helpers on Linux, Windows, and macOS on x64 and arm64. Each build is repeated in an independent directory with the same toolchain, and the job compares the bytes. Windows CI uses pinned Roslyn for deterministic builds. The packaging job checks all six hashes and creates a single npm tarball. Consumer jobs verify offline install, interrupted installation recovery, and upgrade and uninstall while preserving an active workload's identity. Download `candidate-tarball` from a successful run and verify its SHA-256 file. The unsigned `build-metadata.json` records the workflow run, Git commit, and executable hashes.
+## Local release verification
 
-The provenance job attests a consumer-verified tarball on a trusted branch run when the repository is public or the operator sets `PF_ENABLE_ATTESTATIONS=true` on an eligible private GitHub Enterprise Cloud repository. Use `gh attestation verify <archive.tgz> --repo kubilaycakmak/ProjectFreeze` to verify a signed candidate. Private repositories on other plans retain checksum and workflow metadata evidence. See [GitHub artifact attestation availability](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations).
+1. Check out the same revision on native Windows, macOS, and Linux x64 and ARM64 hosts for the [supported platform matrix](README.md#requirements). Run `npm run build:native`, `node scripts/reproducible.js`, and `npm test` on each host. The reproducibility check builds in a separate directory and compares bytes. Record the OS, architecture, Node.js and compiler versions, and test results.
+2. Collect each generated helper alongside its `.sha256` file in `helpers/` in a clean checkout of the same revision on macOS or Linux. Preserve the execute bits on the macOS and Linux helpers. Run `node scripts/package.js --all` to verify all six checksums and create the npm tarball, its SHA-256 file, and `dist/build-metadata.json`. The unsigned metadata records the archive and helper hashes and includes the Git commit for a clean working tree.
+3. Copy the same tarball and its `.sha256` file into each consumer environment. Run `node scripts/consumer.js /path/to/candidate.tgz` with the actual tarball path. This verifies the hash, offline install, interrupted installation recovery, and uninstall and reinstall while preserving a running workload. Set `PF_PREVIOUS_TARBALL` to an earlier package to exercise an upgrade.
 
-Run optional backend checks on a disposable host with their real prerequisites. `PF_TEST_SYSTEMD=1` uses a running user manager and creates temporary user units. `PF_TEST_DOCKER=1` needs local Docker and the test fixture image already present. `PF_TEST_CRIU=1` needs an installed CRIU backend and the privileges CRIU requires. The hosted Linux checks provision dependencies in disposable CI runners.
+For a host-specific development tarball, build the local helper and run `node scripts/package.js` without `--all`.
 
-Check support assumptions against the [Node release schedule](https://nodejs.org/en/about/previous-releases), [Node 24 build targets](https://github.com/nodejs/node/blob/v24.x/BUILDING.md), and the [GitHub runner matrix](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job). Node 24 on Ubuntu 24.04, macOS 15, and Windows 11 or Server 2025 is the primary verification matrix. Node 26 is exercised on Linux and Windows x64. Treat combinations outside a passing test matrix as unverified.
+## Local integration tests
+
+Run optional backend checks on a disposable host with the matching prerequisites.
+
+| Test | Prerequisites and invocation |
+| --- | --- |
+| Linux systemd | With a running user manager, run `PF_TEST_SYSTEMD=1 node --test test/systemd.test.js`. |
+| Linux CRIU | On a host that passes `criu check --no-default-config`, run `PF_TEST_CRIU=1 node --test --test-name-pattern=CRIU test/backends.test.js` with the privileges CRIU requires. |
+| Linux Docker Compose | With local Docker and Compose and the `busybox:1.37` image already pulled, run `PF_TEST_DOCKER=1 node --test --test-name-pattern=Compose test/backends.test.js`. Add `PF_TEST_DOCKER_CHECKPOINT=1` for checkpoint and restore on an experimental local engine with CRIU and readable checkpoint storage. |
+| macOS LaunchAgent | While signed in to a GUI session, run `PF_TEST_LAUNCHD=1 node --test test/supervisors.test.js`. |
+| Windows Task Scheduler and SCM | In an elevated PowerShell session on a disposable host, set `$env:PF_TEST_WINDOWS_SUPERVISORS = '1'` and run `node --test test/supervisors.test.js`. |
+| Windows interactive terminal | With Python and `pywinpty` installed, run `python -X utf8 test/terminal-windows.py`. |

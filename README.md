@@ -20,7 +20,7 @@ Use Node.js 24.11.0 or later in the 24.x series, or Node.js 26.x, with `npm` and
 | macOS | macOS 15 (Intel x64 and Apple silicon ARM64) |
 | Linux | Ubuntu 24.04 (x64 and ARM64). The native helper uses glibc and requires a mounted `/proc` filesystem. |
 
-The automated matrix uses Node.js 24 on Windows 11 ARM64, Windows Server 2025, macOS, and Linux. Node.js 26 was tested on Windows and Linux x64, including a manual Windows 11 test. Optional integrations have their own prerequisites, including Docker for Compose and Docker checkpoints, CRIU for native Linux checkpoints, and a user systemd manager for Linux service control. See the [operations guide](docs/operations.md) and [integration requirements](docs/interfaces.md#recipes).
+Node.js 24 verification covered Windows 11 ARM64, Windows Server 2025, macOS, and Linux. Node.js 26 was tested on Windows and Linux x64, including a manual Windows 11 test. Optional integrations have their own prerequisites, including Docker for Compose and Docker checkpoints, CRIU for native Linux checkpoints, and a user systemd manager for Linux service control. See the [operations guide](docs/operations.md) and [integration requirements](docs/interfaces.md#recipes).
 
 ## Using the menu
 
