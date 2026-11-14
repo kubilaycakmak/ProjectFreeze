@@ -497,7 +497,9 @@ export class Engine {
       this.record(job, project, id, 'started');
     }
     await this.launch(job, project);
-    await this.restoreUnits(job, project, units.filter(u => u.timer), 'start', 'stoppedUnits', true);
+    try {
+      await this.restoreUnits(job, project, units.filter(u => u.timer), 'start', 'stoppedUnits', true);
+    } catch (error) { project.state = 'partial'; throw error; }
   }
 
   async changeUnit(job, project, action, target, field, remove = false) {

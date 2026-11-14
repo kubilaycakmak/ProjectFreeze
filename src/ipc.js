@@ -233,6 +233,10 @@ export async function request(action, input = {}, autoStart = true) {
     return start(dir);
   }
   if (!autoStart) return connect(dir, action, input);
+  if (['list', 'discover', 'inspect', 'history', 'operation'].includes(action)) {
+    try { return await connect(dir, action, input); }
+    catch (error) { if (error.code !== 'UNAVAILABLE') throw error; }
+  }
   try { await connect(dir, 'daemon-status', {}); }
   catch (error) {
     if (error.code !== 'UNAVAILABLE') throw error;

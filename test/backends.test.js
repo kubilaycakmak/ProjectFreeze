@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
-import { composeTargets, containerAction } from '../src/integrations.js';
+import { checkpoint, composeTargets, containerAction, restore } from '../src/integrations.js';
 
 const exec = promisify(execFile);
 const bin = fileURLToPath(new URL('../bin/projectfreeze.js', import.meta.url));
@@ -64,6 +64,12 @@ test('real Compose service identity, pause, sharing, and shutdown', {
     assert.equal((await composeTargets(project, [project]))[0].running, false);
     await containerAction('start', running.id);
     assert.equal((await composeTargets(project, [project]))[0].running, true);
+    if (process.env.PF_TEST_DOCKER_CHECKPOINT === '1') {
+      const id = await checkpoint(cwd, project, undefined, 'docker', await composeTargets(project, [project]), () => {});
+      await containerAction('stop', running.id, 1000);
+      await restore(cwd, project, id, await composeTargets(project, [project]), () => {});
+      assert.equal((await composeTargets(project, [project]))[0].running, true);
+    }
   } finally {
     await compose('unpause').catch(() => {});
     await compose('down').catch(() => {});

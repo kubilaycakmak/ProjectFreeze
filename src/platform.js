@@ -13,6 +13,7 @@ export const windows = process.platform === 'win32';
 export const linux = process.platform === 'linux';
 const name = `projectfreeze-${process.platform}-${process.arch}${windows ? '.exe' : ''}`;
 export const helper = fileURLToPath(new URL(`../helpers/${name}`, import.meta.url));
+const cliPath = fileURLToPath(new URL('../bin/projectfreeze.js', import.meta.url));
 const sys = windows ? join(process.env.SystemRoot, 'System32') : '/usr/bin';
 const samples = new Map();
 const knownStates = new Set(['R', 'S', 'D', 'T', 't', 'I', 'M', '?', 'P', 'Z', 'X']);
@@ -169,7 +170,7 @@ export async function scan(full = true) {
     }
     if (full) await linuxPorts(rows);
   } else rows = await nonLinuxRows(boot, full);
-  rows = rows.filter(row => row.pid > 1 && !ignored(row.pid));
+  rows = rows.filter(row => row.pid > 1 && !ignored(row.pid) && row.image !== helper && row.projectHint !== cliPath);
   if (full) {
     const time = performance.now();
     const current = new Set();

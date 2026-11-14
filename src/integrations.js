@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { arch, release } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { Fault } from './errors.js';
 import { bootId, command, executable, linux } from './platform.js';
 
@@ -113,11 +113,15 @@ export async function checkpoint(state, project, root, backend, targets, mark, v
     if (container.Mounts.length || container.HostConfig.Privileged || container.HostConfig.NetworkMode !== 'none') {
       throw new Fault('UNSUPPORTED', 'This Docker checkpoint scope requires network mode none, no mounts, and an unprivileged container.');
     }
-    Object.assign(manifest, { container: container.Id, image: container.Image, version: version.Version });
+    if (!isAbsolute(info.DockerRootDir)) throw new Fault('DENIED', 'Docker did not report a local checkpoint store.');
+    const imagePath = join(info.DockerRootDir, 'containers', container.Id, 'checkpoints', id);
+    const access = await lstat(join(imagePath, '..')).catch(() => null);
+    if (!access?.isDirectory()) throw new Fault('DENIED', 'The caller cannot verify the Docker engine checkpoint directory.');
+    Object.assign(manifest, { container: container.Id, image: container.Image, version: version.Version, dockerRoot: info.DockerRootDir });
     await mkdir(path, { mode: 0o700 });
     mark(id);
-    await docker(['checkpoint', 'create', '--leave-running', '--checkpoint-dir', path, manifest.container, id], { timeout: 120000 });
-    manifest.files = await hashFiles(join(path, id));
+    await docker(['checkpoint', 'create', '--leave-running', manifest.container, id], { timeout: 120000 });
+    manifest.files = await hashFiles(imagePath);
   } else {
     if (!root || targets.length) throw new Fault('UNSUPPORTED', 'Native checkpoint requires a live native root and no container dependencies.');
     const { cli, version } = await criu();
@@ -144,20 +148,23 @@ export async function restore(state, project, id, targets, mark) {
       manifest.platform !== process.platform || manifest.arch !== arch() || manifest.kernel !== release() || manifest.boot !== await bootId()) {
     throw new Fault('DENIED', 'Checkpoint requires the original project, host boot, architecture, and kernel.');
   }
-  const images = manifest.backend === 'docker' ? join(path, id) : path;
-  if (JSON.stringify(await hashFiles(images)) !== JSON.stringify(manifest.files)) throw new Fault('DENIED', 'Checkpoint integrity verification failed.');
   if (manifest.backend === 'docker') {
     const version = JSON.parse(await docker(['version', '--format', '{{json .Server}}']));
+    const info = JSON.parse(await docker(['info', '--format', '{{json .}}']));
     const container = await inspectDocker(manifest.container);
-    if (version.Version !== manifest.version || container.Image !== manifest.image || !targets.some(t => !t.shared && !t.running && t.id === manifest.container)) {
+    if (version.Version !== manifest.version || container.Image !== manifest.image || info.DockerRootDir !== manifest.dockerRoot ||
+        !info.ExperimentalBuild || !targets.some(t => !t.shared && !t.running && t.id === manifest.container)) {
       throw new Fault('DENIED', 'Restore requires the original stopped container and matching Docker version.');
     }
+    const images = join(info.DockerRootDir, 'containers', container.Id, 'checkpoints', id);
+    if (JSON.stringify(await hashFiles(images)) !== JSON.stringify(manifest.files)) throw new Fault('DENIED', 'Checkpoint integrity verification failed.');
     mark(id);
-    await docker(['start', '--checkpoint', id, '--checkpoint-dir', path, manifest.container], { timeout: 120000 });
+    await docker(['start', '--checkpoint', id, manifest.container], { timeout: 120000 });
     if (!(await inspectDocker(manifest.container)).State.Running) throw new Fault('PARTIAL', 'Restored container is not running.');
     return undefined;
   }
   if (manifest.backend !== 'criu') throw new Fault('DENIED', 'Unknown checkpoint backend.');
+  if (JSON.stringify(await hashFiles(path)) !== JSON.stringify(manifest.files)) throw new Fault('DENIED', 'Checkpoint integrity verification failed.');
   const { cli, version } = await criu();
   if (manifest.version !== version || targets.length) throw new Fault('DENIED', 'Restore requires the original CRIU version and capture scope.');
   const work = join(state, `restore-${randomUUID()}`);

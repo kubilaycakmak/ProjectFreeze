@@ -119,7 +119,7 @@ export async function interactive() {
     run: () => act(action, { ids, ...args }) };
   }
 
-  async function adopt(project, freezeAfter) {
+  async function adopt(project, after) {
     if (active) return;
     detail = await request('inspect', { id: project.id });
     page = 'detail';
@@ -132,10 +132,19 @@ export async function interactive() {
       preview = { title: `Adopt ${approved.length} explicitly approved process(es)`, lines: approved.map(row => `${row.pid} ${row.image ?? row.cwd}`),
         run: async () => {
           const adopted = await act('adopt', { cwd: project.cwd, confirm: true, members: approved.map(({ pid, birth, boot }) => ({ pid, birth, boot })) });
-          if (adopted && freezeAfter) review('freeze', [project.id]);
+          if (adopted && after) await after();
         } };
     } };
     message = `Candidates ${members.map(row => row.pid).join(', ')}`;
+  }
+
+  async function reviewFreeze(ids) {
+    const observed = projects.find(project => ids.includes(project.id) && project.state === 'discovered');
+    if (!observed) { review('freeze', ids); return; }
+    await adopt(observed, async () => {
+      projects = await request('list');
+      await reviewFreeze(ids);
+    });
   }
 
   emitKeypressEvents(input);
@@ -188,11 +197,11 @@ export async function interactive() {
     if (name === 'return' && page === 'list') { detail = await request('inspect', { id: project.id }); page = 'detail'; }
     if (name === 'right') expanded = true;
     if (name === 'left') expanded = false;
-    if (name === 'a') { await adopt(project, false); return; }
+    if (name === 'a') { await adopt(project); return; }
     const action = ({ f: 'freeze', u: 'resume', z: 'sleep', w: 'wake', c: 'checkpoint', o: 'restore', e: 'reconcile' })[name];
     if (!action) return;
     const ids = selected.size ? [...selected] : [project.id];
-    if (action === 'freeze' && ids.length === 1 && project.state === 'discovered') { await adopt(project, true); return; }
+    if (action === 'freeze') { await reviewFreeze(ids); return; }
     if (action === 'restore') { editing = { label: 'Checkpoint ID', text: '', apply: checkpoint => review(action, ids, { checkpoint }) }; return; }
     review(action, ids);
   }
