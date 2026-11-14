@@ -89,5 +89,6 @@ export function summarize(project, rows, discovered) {
     dependencies: project.recipe?.dependencies ?? [], containers: project.recipe?.containers ?? [], systemd: project.recipe?.systemd ?? [],
     supervisors: project.recipe?.supervisors?.map(({ kind, name, shared }) => ({ kind, name, shared })) ?? [],
     excluded: project.excluded, unresolved: discovered?.unresolved ?? [], observedAt: new Date().toISOString(),
+    restart: project.recipe ? { configured: true, gracefulStop: Boolean(project.recipe.stop) } : { configured: false },
     metrics: 'CPU is sampled as percent of one core. RSS sums resident pages and can count shared pages more than once.' };
 }

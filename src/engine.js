@@ -68,7 +68,7 @@ export class Engine {
     for (const project of projects) if (project.root) await this.track(project, rows).catch(() => {});
     const discovered = await candidates(projects, rows);
     const observed = discovered.map(group => ({ ...group, processes: group.members, processCount: group.members.length,
-      ports: group.members.flatMap(member => member.ports), dependencies: [], containers: [], systemd: [], supervisors: [] }));
+      ports: group.members.flatMap(member => member.ports), dependencies: [], containers: [], systemd: [], supervisors: [], restart: { configured: false } }));
     if (action === 'discover') return observed;
     const managed = projects.map(project => summarize(project, rows, observed.find(d => d.id === project.id)));
     const combined = [...managed, ...observed.filter(candidate => !projects.some(p => p.id === candidate.id))];

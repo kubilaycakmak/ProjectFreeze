@@ -7,7 +7,8 @@ import { daemon, request, waitOperation } from './ipc.js';
 const usage = `ProjectFreeze
 
   projectfreeze                         Open the interactive terminal
-  projectfreeze menu                    Open the numbered, Enter-driven menu
+  projectfreeze menu                    Open the interactive terminal
+  projectfreeze menu --plain            Use line input and text output
   projectfreeze list | discover | listeners | history
   projectfreeze inspect PROJECT
   projectfreeze adopt --cwd DIR --member PID@BIRTH@BOOT --confirm [--recipe FILE]
@@ -29,7 +30,7 @@ Press Ctrl-C to disconnect from a running operation. Use cancel ID to request ca
 const mutations = new Set(['adopt', 'run', 'freeze', 'resume', 'sleep', 'wake', 'checkpoint', 'restore', 'reconcile']);
 const readActions = new Set(['list', 'discover', 'inspect', 'listeners', 'history', 'operation', 'cancel']);
 const opts = {
-  json: { type: 'boolean' }, detach: { type: 'boolean' }, force: { type: 'boolean' }, confirm: { type: 'boolean' },
+  json: { type: 'boolean' }, plain: { type: 'boolean' }, detach: { type: 'boolean' }, force: { type: 'boolean' }, confirm: { type: 'boolean' },
   cwd: { type: 'string' }, recipe: { type: 'string' }, member: { type: 'string', multiple: true },
   exclude: { type: 'string', multiple: true }, backend: { type: 'string' }, checkpoint: { type: 'string' }, help: { type: 'boolean', short: 'h' }
 };
@@ -61,10 +62,11 @@ export async function main(args) {
     if (values.help || action === 'help') { process.stdout.write(usage); return; }
     if (action === 'mcp') { await (await import('./mcp.js')).serve(); return; }
     if (action === '_daemon' || (action === 'daemon' && ids[0] === 'foreground')) { await daemon(); return; }
-    if (action === 'menu' || (!action && !json && process.stdin.isTTY && process.stdout.isTTY)) {
-      if (json || ids.length) throw new Fault('USAGE', 'Run projectfreeze menu without additional arguments.');
-      if (action === 'menu' || process.platform === 'win32' || process.env.TERM === 'dumb') await (await import('./line-menu.js')).lineMenu();
-      else await (await import('./tui.js')).interactive();
+    const terminal = process.stdin.isTTY && process.stdout.isTTY && process.env.TERM !== 'dumb';
+    if (action === 'menu' || (!action && !json && (terminal || values.plain))) {
+      if (json || ids.length) throw new Fault('USAGE', 'Run projectfreeze menu with an optional --plain flag.');
+      if (terminal && !values.plain) await (await import('./tui.js')).interactive();
+      else await (await import('./line-menu.js')).lineMenu();
       return;
     }
     action ??= 'list';

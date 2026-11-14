@@ -9,9 +9,7 @@ npm install --global /path/to/kubilaycakmak-projectfreeze-0.1.0-dev.2.tgz
 projectfreeze
 ```
 
-On Windows the menu opens with a scan of running projects and their TCP listeners. Enter a project number to inspect it or `p` to view all locally observable TCP listeners. Press Enter to rescan. Use `z` for Sleep, `w` for Wake, and `q` to disconnect. `projectfreeze menu` opens the same numbered menu on other platforms.
-
-In the arrow-key terminal interface, press Enter to inspect a project, Right to expand its resources, and `f` to review a freeze. ProjectFreeze asks you to review the candidate PIDs when ownership is unclear. Use Space to select multiple registered projects. Press `?` for all shortcuts or `q` to disconnect.
+In a terminal, `projectfreeze` and `projectfreeze menu` open the live interface on Windows, macOS, and Linux. Use the arrow keys to select a project, Enter to inspect it, and Tab to switch between Projects, TCP listeners, and History. Use `/` to search, `z` for Sleep, `w` for Wake, and `q` to disconnect. Press `?` for the full key reference. ProjectFreeze asks you to review candidate processes before adoption. `projectfreeze menu --plain` provides a line-driven fallback.
 
 ```sh
 projectfreeze discover --json

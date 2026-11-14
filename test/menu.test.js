@@ -70,7 +70,7 @@ test('numbered menu finds listeners and sleeps and wakes a streaming workload', 
     await rm(cwd, { recursive: true, force: true, maxRetries: 6 });
   });
   await exec(process.execPath, [fixture, '--recipe', recipe, String(port)], options);
-  menu = spawn(process.execPath, [bin, 'menu'], { cwd, env, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
+  menu = spawn(process.execPath, [bin, 'menu', '--plain'], { cwd, env, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
   let output = '';
   menu.stdout.setEncoding('utf8').on('data', chunk => { output += chunk; });
   const command = async (value, next) => {
