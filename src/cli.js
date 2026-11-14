@@ -9,7 +9,7 @@ const usage = `ProjectFreeze
   projectfreeze                         Open the interactive terminal
   projectfreeze menu                    Open the interactive terminal
   projectfreeze menu --plain            Use line input and text output
-  projectfreeze list | discover | listeners | history
+  projectfreeze list | discover | listeners | ports | services | history
   projectfreeze inspect PROJECT
   projectfreeze adopt --cwd DIR --member PID@BIRTH@BOOT --confirm [--recipe FILE]
   projectfreeze run --cwd DIR -- EXECUTABLE [ARG ...]
@@ -28,7 +28,8 @@ Press Ctrl-C to disconnect from a running operation. Use cancel ID to request ca
 `;
 
 const mutations = new Set(['adopt', 'run', 'freeze', 'resume', 'sleep', 'wake', 'checkpoint', 'restore', 'reconcile']);
-const readActions = new Set(['list', 'discover', 'inspect', 'listeners', 'history', 'operation', 'cancel']);
+const readActions = new Set(['list', 'discover', 'inspect', 'listeners', 'ports', 'services', 'history', 'operation', 'cancel']);
+const terminalText = value => String(value).replace(/[\p{Cc}\p{Cf}]/gu, ' ');
 const opts = {
   json: { type: 'boolean' }, plain: { type: 'boolean' }, detach: { type: 'boolean' }, force: { type: 'boolean' }, confirm: { type: 'boolean' },
   cwd: { type: 'string' }, recipe: { type: 'string' }, member: { type: 'string', multiple: true },
@@ -104,8 +105,14 @@ export async function main(args) {
     const status = result?.status;
     const fault = result?.outcomes?.find(outcome => outcome.status === 'failed');
     const code = status === 'partial' || status === 'interrupted' ? 'PARTIAL' : status === 'cancelled' ? 'CANCELLED' : status === 'failed' ? fault?.code ?? 'INTERNAL' : null;
-    const display = () => action === 'listeners' ? (result.length ? result.map(row =>
-      `${row.address.includes(':') ? `[${row.address}]` : row.address}:${row.port}\tPID ${row.pid}\t${row.name ?? row.image ?? 'unassigned'}\t${row.scope}`).join('\n') : 'No TCP listeners observed.') : format(result);
+    const display = () => {
+      if (action === 'listeners' || action === 'ports') return result.length ? result.map(row =>
+        [`${row.protocol ? `${row.protocol.toUpperCase()} ` : ''}${row.address.includes(':') ? `[${row.address}]` : row.address}:${row.port}`,
+          `PID ${row.pid ?? 'unknown'}`, row.name ?? row.image ?? 'unassigned', row.scope].map(terminalText).join('\t')).join('\n') : 'No local endpoints observed.';
+      if (action === 'services') return [...result.rows.map(row => [row.manager, row.name, `PID ${row.pid ?? 'unknown'}`, row.description ?? ''].map(terminalText).join('\t')),
+        ...result.unavailable.map(scope => `${scope} service manager unavailable`)].join('\n') || 'No running services observed.';
+      return format(result);
+    };
     process.stdout.write(`${json ? JSON.stringify({ schemaVersion: 1, ok: !code, data: result }) : display()}\n`);
     if (code) process.exitCode = exitCode(code);
   } catch (error) {

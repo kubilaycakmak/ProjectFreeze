@@ -24,7 +24,7 @@ Node.js 24 verification covered Windows 11 ARM64, Windows Server 2025, macOS, an
 
 ## Using the menu
 
-Use the arrow keys to select a project, Enter to inspect it, and Tab to switch between Projects, TCP listeners, and History. Use `/` to search, `z` for Sleep, `w` for Wake, and `q` to disconnect. Press `?` for the full key reference. ProjectFreeze asks you to review candidate processes before adoption.
+Use the arrow keys to select a project, Enter to inspect it, and Tab to switch views. Use `/` to search, `f` to Freeze, `z` for Sleep, `w` for Wake, and `q` to disconnect. Press `?` for the full key reference. ProjectFreeze asks you to review candidate processes before adoption.
 
 Append `menu --plain` to the quick-start command for a line-driven fallback. To run individual commands, pass them after the package name.
 
@@ -37,6 +37,8 @@ npx @kubilaycakmak/projectfreeze@next resume PROJECT
 ```
 
 Freeze preserves process memory and usually retains bound ports. Sleep shuts down approved resources and requires a durable restart recipe. Wake starts a fresh workload and waits for configured readiness. Checkpoint and restore depend on the eligible local backend and capture scope.
+
+The development build adds Ports and Services views and a two-step `k` force-termination command for one owned native project. Build the local helper with `npm run build:native` and open the development menu with `node bin/projectfreeze.js`. Set `PROJECTFREEZE_HOME` to a separate absolute directory to test alongside an installed copy.
 
 - [Commands, recipes, and MCP](docs/interfaces.md)
 - [Architecture, security, and recovery](docs/operations.md)

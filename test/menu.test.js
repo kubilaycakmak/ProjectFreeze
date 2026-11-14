@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
+import { createSocket } from 'node:dgram';
 import { copyFile, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { request } from 'node:http';
 import { createConnection, createServer } from 'node:net';
@@ -13,6 +14,7 @@ import { promisify } from 'node:util';
 const exec = promisify(execFile);
 const bin = fileURLToPath(new URL('../bin/projectfreeze.js', import.meta.url));
 const fixture = fileURLToPath(new URL('../examples/stream-test.mjs', import.meta.url));
+const ipc = new URL('../src/ipc.js', import.meta.url).href;
 
 async function reserve(host) {
   const server = createServer();
@@ -43,7 +45,7 @@ async function until(check, reason, timeout = 17000) {
   assert.fail(reason);
 }
 
-test('numbered menu finds listeners and sleeps and wakes a streaming workload', { timeout: 125000 }, async t => {
+test('local port inventory and reviewed lifecycle controls preserve unrelated sockets', { timeout: 125000 }, async t => {
   const cwd = await realpath(await mkdtemp(join(tmpdir(), 'pf-menu-')));
   const env = { ...process.env, PROJECTFREEZE_HOME: join(cwd, 'state') };
   const options = { cwd, env, windowsHide: true, timeout: 30000 };
@@ -53,6 +55,11 @@ test('numbered menu finds listeners and sleeps and wakes a streaming workload', 
   const port = reservation.address().port;
   await new Promise(resolve => reservation.close(resolve));
   const ipv6 = process.platform === 'win32' ? await reserve('::1') : undefined;
+  const udp = createSocket('udp4');
+  await new Promise((resolve, reject) => {
+    udp.once('error', reject);
+    udp.bind(0, '127.0.0.1', resolve);
+  });
   let menu, first, second, id, candidate;
   t.after(async () => {
     menu?.kill();
@@ -60,6 +67,7 @@ test('numbered menu finds listeners and sleeps and wakes a streaming workload', 
     first?.close();
     second?.close();
     ipv6?.close();
+    udp.close();
     id ??= (await run('list').catch(() => [])).find(item => item.cwd === cwd && item.state !== 'discovered')?.id;
     if (id) {
       await run('resume', id).catch(() => {});
@@ -92,7 +100,8 @@ test('numbered menu finds listeners and sleeps and wakes a streaming workload', 
   const view = await command('y', /run complete[\s\S]*Project number/);
   const selected = view.match(new RegExp(`^(\\d+)\\. .*\\[running\\]  TCP ${port} `, 'm'));
   assert.ok(selected, view);
-  await command('p', new RegExp(`127\\.0\\.0\\.1:${port}  PID \\d+[\\s\\S]*Project number`));
+  const inventory = await command('p', new RegExp(`TCP 127\\.0\\.0\\.1:${port}  PID \\d+[\\s\\S]*Project number`));
+  assert.match(inventory, new RegExp(`UDP 127\\.0\\.0\\.1:${udp.address().port}  PID`));
   if (ipv6) {
     const listeners = await run('listeners');
     assert.ok(listeners.some(row => row.pid === process.pid && row.address === '::1' && row.port === ipv6.address().port));
@@ -116,6 +125,27 @@ test('numbered menu finds listeners and sleeps and wakes a streaming workload', 
   const pid2 = Number((await until(() => second.lines.join('').match(/PID=(\d+)/), 'no resumed stream'))[1]);
   assert.notEqual(pid1, pid2);
   assert.ok((await run('listeners')).some(row => row.port === port && row.pid === pid2 && row.project === id));
+  await exec(process.execPath, ['--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import { request, waitOperation } from ${JSON.stringify(ipc)};
+    const id = process.argv[1];
+    const project = await request('inspect', { id });
+    const members = project.processes.map(({ pid, birth, boot }) => ({ pid, birth, boot }));
+    for (const payload of [{ ids: [id], members }, { ids: [id], confirm: true, members: members.map(row => ({ ...row, birth: '1' })) }]) {
+      const started = await request('kill', payload);
+      const result = await waitOperation(started.id);
+      assert.equal(result.status, 'failed');
+      assert.equal(result.outcomes[0].code, 'DENIED');
+    }
+    assert.ok((await request('inspect', { id })).processes.some(row => row.pid === ${pid2}));
+    const started = await request('kill', { ids: [id], confirm: true, members });
+    const result = await waitOperation(started.id);
+    assert.equal(result.status, 'complete', JSON.stringify(result));
+    assert.equal((await request('inspect', { id })).state, 'sleeping');
+    const ports = await request('ports');
+    assert.ok(!ports.some(row => row.protocol === 'tcp' && row.port === ${port} && row.address === '127.0.0.1'));
+    assert.ok(ports.some(row => row.protocol === 'udp' && row.port === ${udp.address().port} && row.address === '127.0.0.1'));
+  `, id], options);
   t.diagnostic(`TCP ${port}: PID ${pid1} → closed → PID ${pid2}`);
   await command('z', /Apply sleep\? \[y\/N\]/);
   await command('y', /sleep complete[\s\S]*\[sleeping\][\s\S]*q Quit/);

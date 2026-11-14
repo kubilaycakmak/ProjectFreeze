@@ -96,6 +96,31 @@ function parseAddress(hex) {
   return Array.from({ length: 8 }, (_, i) => bytes.readUInt16BE(i * 2).toString(16)).join(':');
 }
 
+async function procSockets(directory, protocols) {
+  const tables = await Promise.all(protocols.map(async table => {
+    const protocol = table.slice(0, 3);
+    const data = await readFile(`${directory}/${table}`, 'utf8').catch(error => {
+      if (error.code !== 'ENOENT' || table === 'tcp') throw error;
+      return '';
+    });
+    return data.trimEnd().split('\n').slice(1).flatMap(line => {
+      const fields = line.trim().split(/\s+/);
+      if (!fields[1] || (protocol === 'tcp' && fields[3] !== '0A')) return [];
+      const [host, hexPort] = fields[1].split(':');
+      const address = parseAddress(host);
+      const port = Number.parseInt(hexPort, 16);
+      return address && port ? [{ protocol, address, port, socket: `socket:[${fields[9]}]` }] : [];
+    });
+  }));
+  return tables.flat();
+}
+
+async function socketLinks(pid) {
+  const path = `/proc/${pid}/fd`;
+  const descriptors = await readdir(path).catch(() => []);
+  return new Set(await Promise.all(descriptors.map(fd => readlink(`${path}/${fd}`).catch(() => ''))));
+}
+
 async function linuxPorts(rows) {
   const namespaces = new Map();
   await Promise.all(rows.map(async row => {
@@ -103,22 +128,47 @@ async function linuxPorts(rows) {
     if (ns) namespaces.set(ns, [...(namespaces.get(ns) ?? []), row]);
   }));
   for (const group of namespaces.values()) {
-    const tables = await Promise.all(['tcp', 'tcp6'].map(proto => readFile(`/proc/${group[0].pid}/net/${proto}`, 'utf8').catch(() => '')));
-    const sockets = new Map();
-    for (const line of tables.join('\n').split('\n').slice(1)) {
-      const fields = line.trim().split(/\s+/);
-      if (fields[3] !== '0A') continue;
-      const [host, port] = fields[1].split(':');
-      const address = parseAddress(host);
-      if (address) sockets.set(`socket:[${fields[9]}]`, { address, port: Number.parseInt(port, 16) });
-    }
+    const entries = await procSockets(`/proc/${group[0].pid}/net`, ['tcp', 'tcp6']).catch(() => []);
+    const sockets = new Map(entries.map(({ address, port, socket }) => [socket, { address, port }]));
     for (const row of group) {
-      const path = `/proc/${row.pid}/fd`;
-      const descriptors = await readdir(path).catch(() => []);
-      const links = await Promise.all(descriptors.map(fd => readlink(`${path}/${fd}`).catch(() => '')));
-      row.ports = [...new Set(links)].map(link => sockets.get(link)).filter(Boolean);
+      row.ports = [...await socketLinks(row.pid)].map(link => sockets.get(link)).filter(Boolean);
     }
   }
+}
+
+async function windowsSockets(protocol) {
+  const net = await command(helper, [protocol === 'tcp' ? 'listeners' : 'udp-sockets']);
+  return net.trimEnd().split(/\r?\n/).filter(Boolean).map(line => {
+    const [pid, address, port] = line.split('\t');
+    return { protocol, address, port: +port, pid: +pid || null };
+  });
+}
+
+export async function localPorts(rows) {
+  if (windows) return (await Promise.all(['tcp', 'udp'].map(windowsSockets))).flat();
+  if (linux) {
+    const entries = await procSockets('/proc/net', ['tcp', 'tcp6', 'udp', 'udp6']);
+    const namespace = await readlink('/proc/self/ns/net');
+    const bySocket = new Map();
+    for (const { pid } of rows) {
+      if (await readlink(`/proc/${pid}/ns/net`).catch(() => '') !== namespace) continue;
+      for (const socket of await socketLinks(pid)) {
+        if (socket.startsWith('socket:[')) bySocket.set(socket, [...(bySocket.get(socket) ?? []), pid]);
+      }
+    }
+    return entries.flatMap(({ socket, ...endpoint }) => (bySocket.get(socket) ?? [null]).map(pid => ({ ...endpoint, pid })));
+  }
+  const output = (await Promise.all(['inet', 'inet6'].map(family => command('/usr/sbin/netstat', ['-anW', '-f', family])))).join('\n');
+  return output.split('\n').flatMap(line => {
+    const [kind, , , endpoint, , state] = line.trim().split(/\s+/);
+    if (!/^(?:tcp|udp)[46]+$/.test(kind) || (kind.startsWith('tcp') && state !== 'LISTEN')) return [];
+    const parsed = endpoint?.match(/^(.+)\.(\d+)$/);
+    if (!parsed) return [];
+    const [, address, port] = parsed;
+    const protocol = kind.slice(0, 3);
+    const owners = protocol === 'tcp' ? rows.filter(row => row.ports.some(value => value.port === +port && value.address === address)) : [];
+    return (owners.length ? owners.map(row => row.pid) : [null]).map(pid => ({ protocol, address, port: +port, pid }));
+  });
 }
 
 function decode(text, encoding) { return text ? Buffer.from(text, encoding).toString('utf8') : undefined; }
@@ -139,11 +189,7 @@ async function nonLinuxRows(boot, full) {
   if (!full) return rows;
   const byPid = new Map(rows.map(row => [row.pid, row]));
   if (windows) {
-    const net = await command(helper, ['listeners']);
-    for (const line of net.trimEnd().split(/\r?\n/).filter(Boolean)) {
-      const [pid, address, port] = line.split('\t');
-      byPid.get(+pid)?.ports.push({ address, port: +port });
-    }
+    for (const { pid, address, port } of await windowsSockets('tcp')) byPid.get(pid)?.ports.push({ address, port });
   } else {
     const sockets = await command('/usr/sbin/lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-Fpn']).catch(() => '');
     let pid = 0;

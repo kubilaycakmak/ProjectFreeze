@@ -20,8 +20,8 @@ const validHex = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(val
 const mac = (secret, ...parts) => createHmac('sha256', Buffer.from(secret, 'hex')).update(JSON.stringify(parts)).digest('hex');
 const same = (a, b) => validHex(a) && validHex(b) && timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
 const recordPath = dir => join(dir, 'endpoint.json');
-const actions = new Set(['list', 'discover', 'inspect', 'listeners', 'history', 'operation', 'cancel', 'adopt', 'run', 'freeze', 'resume',
-  'sleep', 'wake', 'checkpoint', 'restore', 'reconcile', 'daemon-status', 'daemon-stop']);
+const actions = new Set(['list', 'discover', 'inspect', 'listeners', 'ports', 'services', 'history', 'operation', 'cancel', 'adopt', 'run', 'freeze', 'resume',
+  'sleep', 'kill', 'wake', 'checkpoint', 'restore', 'reconcile', 'daemon-status', 'daemon-stop']);
 
 export async function stateDirectory() {
   const dir = process.env.PROJECTFREEZE_HOME ?? (windows ? join(process.env.LOCALAPPDATA ?? homedir(), 'ProjectFreeze') : join(homedir(), '.projectfreeze'));
@@ -232,7 +232,7 @@ export async function request(action, input = {}, autoStart = true) {
     return start(dir);
   }
   if (!autoStart) return connect(dir, action, input);
-  if (['list', 'discover', 'inspect', 'listeners', 'history', 'operation'].includes(action)) {
+  if (['list', 'discover', 'inspect', 'listeners', 'ports', 'services', 'history', 'operation'].includes(action)) {
     try { return await connect(dir, action, input); }
     catch (error) { if (error.code !== 'UNAVAILABLE') throw error; }
   }

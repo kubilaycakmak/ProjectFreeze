@@ -31,7 +31,7 @@ def eventually(check, message, timeout=25):
 
 
 def main():
-    with tempfile.TemporaryDirectory(prefix='pf-terminal-') as directory:
+    with tempfile.TemporaryDirectory(prefix='pf-terminal-') as directory, socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
         cwd = Path(directory).resolve()
         recipe = cwd / 'stream.json'
         env = dict(os.environ, PROJECTFREEZE_HOME=str(cwd / 'state'), NO_COLOR='1')
@@ -47,7 +47,12 @@ def main():
         with socket.socket() as reservation:
             reservation.bind(('127.0.0.1', 0))
             port = reservation.getsockname()[1]
+        udp.bind(('127.0.0.1', 0))
+        udp_port = udp.getsockname()[1]
         subprocess.run([NODE, FIXTURE, '--recipe', str(recipe), str(port)], check=True, **options)
+        config = json.loads(recipe.read_text(encoding='utf-8'))
+        config['restart'] = 'on-failure'
+        recipe.write_text(json.dumps(config), encoding='utf-8')
         project = None
         term = None
         transcript = []
@@ -80,16 +85,26 @@ def main():
             expect('[Projects]')
             expect(cwd.name)
             term.write('\x1b[B')
-            send('\t', '[TCP listeners]')
-            send('/', 'Search tcp listeners')
+            send('\t', '[Ports]')
+            send('/', 'Search ports')
+            term.write(str(udp_port))
+            send('\r', f'UDP 127.0.0.1:{udp_port}')
+            send('\t', '[Services]')
+            expect('Windows SCM')
+            send('\x1b[Z', '[Ports]')
+            send('/', 'Search ports')
             term.write(str(port))
             send('\r', f'127.0.0.1:{port}')
-            term.setwinsize(14, 48)
             send('\x1b[Z', '[Projects]')
             send('/', 'Search projects')
             term.write(cwd.name)
-            send('\r', f'running {port}')
+            send('\r', f'Search: {cwd.name}')
+            offset = len(output())
+            term.setwinsize(14, 48)
+            expect(f'running {port}', offset)
+            offset = len(output())
             term.setwinsize(26, 100)
+            expect('PROCS', offset)
             send('\r', f'TCP listeners: 127.0.0.1:{port}')
             before = cli('inspect', project)
             pid = next(row['pid'] for row in before['processes'] if any(item['port'] == port for item in row['ports']))
@@ -112,9 +127,27 @@ def main():
                     data += chunk
                 new_pid = int(re.search(rb'PID=(\d+)', data)[1])
                 assert pid != new_pid, 'Wake reused the process that was supposed to exit'
+            send('k', 'Force terminate')
+            send('\r', 'Type KILL to confirm force termination')
+            send('\x1b', f'TCP listeners: 127.0.0.1:{port}')
+            with socket.create_connection(('127.0.0.1', port), timeout=5):
+                pass
+            send('k', 'Force terminate')
+            send('\r', 'Type KILL to confirm force termination')
+            term.write('KILL')
+            send('\r', 'Force termination complete')
+            with socket.socket() as connection:
+                connection.settimeout(3)
+                assert connection.connect_ex(('127.0.0.1', port)) != 0, 'Force termination retained the TCP listener'
+            time.sleep(2)
+            assert cli('inspect', project)['state'] == 'sleeping', 'Force termination triggered the on-failure restart'
+            assert any(row['protocol'] == 'udp' and row['port'] == udp_port for row in cli('ports'))
+            send('w', 'Enter Confirm')
+            send('\r', 'Wake complete')
+            assert all(row['pid'] != new_pid for row in cli('inspect', project)['processes'])
             term.write('q')
             eventually(lambda: not term.isalive(), 'q did not return control to the terminal')
-            print(f'ConPTY keyboard, resize, confirmation and live stream verified: PID {pid} → closed → PID {new_pid}')
+            print(f'ConPTY ports, services, resize and force confirmation verified: PID {pid} → closed → PID {new_pid} → terminated')
         finally:
             if term and term.isalive():
                 term.close(force=True)
