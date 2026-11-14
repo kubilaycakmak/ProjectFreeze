@@ -24,11 +24,11 @@ export function supervisorPolicies(value) {
   return value.map(({ kind, name, shared, plist }) => ({ kind, name, shared, ...(kind === 'launchd' ? { plist } : {}) }));
 }
 
-async function projectFile(cwd, path, allowOutside = false) {
+async function projectFile(cwd, path) {
   if (typeof path !== 'string' || !isAbsolute(path)) throw new Fault('DENIED', 'The supervisor must use an absolute executable or definition path.');
   const real = await realpath(path).catch(() => '');
   const rel = relative(cwd, real);
-  if (!real || (!allowOutside && (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)))) {
+  if (!real || !rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
     throw new Fault('DENIED', 'The supervisor definition or executable must be inside the project directory.');
   }
   const info = await lstat(real);
@@ -109,7 +109,7 @@ async function launchdProcess(target, rows, transition = false) {
   const process = rows.find(row => row.pid === target.pid);
   const executable = await realpath(target.executable).catch(() => '');
   const observed = process?.image ? await realpath(process.image).catch(() => '') : '';
-  if (transition && !observed) return undefined;
+  if (transition && (!observed || observed !== executable)) return undefined;
   if (!observed || observed !== executable || rows.some(row => row.parent === target.pid)) {
     throw new Fault('UNSUPPORTED', 'LaunchAgent control requires one observable process with the reviewed executable and no live children.');
   }
