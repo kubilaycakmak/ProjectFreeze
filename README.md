@@ -5,7 +5,7 @@ ProjectFreeze discovers and manages developer workloads on the local machine. Op
 The current version is a development candidate. Install a verified tarball from the GitHub Actions run or build it from source. The proposed registry command is `npx @kubilaycakmak/projectfreeze@latest` after publication.
 
 ```sh
-npm install --global /path/to/kubilaycakmak-projectfreeze-0.1.0-dev.0.tgz
+npm install --global /path/to/kubilaycakmak-projectfreeze-0.1.0-dev.1.tgz
 projectfreeze
 ```
 

@@ -71,7 +71,7 @@ export async function serve() {
       if (!params || typeof params.protocolVersion !== 'string' || negotiated) { rpcError(id, -32602, 'Invalid initialize parameters.'); return; }
       negotiated = true;
       result({ protocolVersion: versions.has(params.protocolVersion) ? params.protocolVersion : '2025-11-25',
-        serverInfo: { name: 'projectfreeze', version: '0.1.0-dev.0' }, capabilities: { tools: {} },
+        serverInfo: { name: 'projectfreeze', version: '0.1.0-dev.1' }, capabilities: { tools: {} },
         instructions: 'Use discover and inspect before adopting or controlling a project. Obtain specific approval for ambiguous adoption or force termination.' });
       return;
     }

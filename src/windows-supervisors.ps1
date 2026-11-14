@@ -1,6 +1,7 @@
 param([string]$Kind, [string]$Name, [string]$Action, [string]$Expected = '-')
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+Add-Type -AssemblyName System.ServiceProcess
 $user = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 function Get-Sid([string]$Account) {
     if ($Account -match '^S-1-[0-9-]+$') { return $Account }
@@ -21,6 +22,7 @@ try {
         $task = $scheduler.GetFolder($folder).GetTask($Name.Substring($at + 1))
         $definition = $task.Definition
         $acl = [Security.AccessControl.RawSecurityDescriptor]::new($task.GetSecurityDescriptor(5))
+        if (!$acl.DiscretionaryAcl) { exit 4 }
         if ($definition.Actions.Count -ne 1 -or $definition.Actions.Item(1).Type -ne 0 -or
             (Get-Sid $definition.Principal.UserId) -ne $user -or $definition.Principal.RunLevel -ne 0 -or
             ($acl.Owner.Value -ne $user -and $acl.Owner.Value -ne 'S-1-5-32-544')) { exit 4 }

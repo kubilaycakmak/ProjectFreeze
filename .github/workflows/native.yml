@@ -44,6 +44,15 @@ jobs:
       - run: npm run build:native
       - run: node scripts/reproducible.js
       - run: npm test
+      - name: Verify native LaunchAgent control
+        if: runner.os == 'macOS' && matrix.runner == 'macos-15'
+        run: PF_TEST_LAUNCHD=1 node --test test/supervisors.test.js
+      - name: Verify Windows Task Scheduler and SCM control
+        if: matrix.runner == 'windows-2025' && matrix.node == 24
+        shell: pwsh
+        run: |
+          $env:PF_TEST_WINDOWS_SUPERVISORS = '1'
+          node --test test/supervisors.test.js
       - name: Verify user service and timer control
         if: matrix.runner == 'ubuntu-24.04' && matrix.node == 24
         shell: bash
@@ -117,7 +126,18 @@ jobs:
         with:
           name: candidate-tarball
           path: dist
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: 0a451832004c716370ed1f720d56463c4c876c2c
+          path: previous
+          persist-credentials: false
+      - run: npm run build:native
+        working-directory: previous
+      - run: node scripts/package.js
+        working-directory: previous
       - run: node scripts/consumer.js
+        env:
+          PF_PREVIOUS_TARBALL: ${{ github.workspace }}/previous/dist/kubilaycakmak-projectfreeze-0.1.0-dev.0.tgz
 
   compose:
     runs-on: ubuntu-24.04

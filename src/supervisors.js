@@ -76,7 +76,8 @@ async function probe(item, project) {
   const state = await windowsProbe(item);
   if (state.path.toLowerCase() !== item.name.toLowerCase()) throw new Fault('DENIED', 'The Windows supervisor returned a different identity.');
   await projectFile(project.cwd, state.executable);
-  if (item.kind === 'task' && await realpath(state.cwd).catch(() => '') !== project.cwd) {
+  if (item.kind === 'task' && (typeof state.cwd !== 'string' || !isAbsolute(state.cwd) ||
+      (await realpath(state.cwd).catch(() => '')).toLowerCase() !== project.cwd.toLowerCase())) {
     throw new Fault('DENIED', 'The scheduled task must use the registered project working directory.');
   }
   return state;
@@ -119,8 +120,9 @@ export async function observeSupervisors(project, all, rows) {
 }
 
 export async function supervisorAction(action, target, project) {
+  if (target.shared) throw new Fault('DENIED', 'Shared supervisors are observational.');
   const before = await probe(target, project);
-  if (target.shared || before.fingerprint !== target.fingerprint) throw new Fault('DENIED', 'Supervisor scope changed before control.');
+  if (before.fingerprint !== target.fingerprint) throw new Fault('DENIED', 'Supervisor scope changed before control.');
   const timeout = project.recipe?.timeout ?? 10000;
   if (target.kind === 'launchd') {
     if (action === 'start') {
