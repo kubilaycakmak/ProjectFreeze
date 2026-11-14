@@ -1,4 +1,4 @@
-import { access, realpath, stat } from 'node:fs/promises';
+import { access, readFile, realpath, stat } from 'node:fs/promises';
 import { basename, dirname, join, relative, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { identity, key, manifestStart, matches, scan } from './platform.js';
@@ -24,6 +24,20 @@ function within(parent, child) {
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !rel.includes(':'));
 }
 
+async function projectFreezeCli(root, hint, cache) {
+  if (root.manifest !== 'package.json' || !hint) return false;
+  const script = relative(root.path, hint).split(sep).join('/');
+  if ((process.platform === 'win32' ? script.toLowerCase() : script) !== 'bin/projectfreeze.js') return false;
+  if (!cache.has(root.path)) cache.set(root.path, (async () => {
+    const file = join(root.path, 'package.json');
+    const info = await stat(file);
+    if (!info.isFile()) return false;
+    const manifest = JSON.parse(await readFile(file, 'utf8'));
+    return manifest.name === '@kubilaycakmak/projectfreeze' && manifest.bin?.projectfreeze === 'bin/projectfreeze.js';
+  })().catch(() => false));
+  return cache.get(root.path);
+}
+
 async function rootFor(start, cache) {
   if (!start) return undefined;
   if (!cache.has(start)) cache.set(start, (async () => {
@@ -44,6 +58,7 @@ export async function candidates(projects, rows = undefined) {
   const processes = rows ?? await scan();
   const groups = new Map();
   const cache = new Map();
+  const cliPackages = new Map();
   const claimed = new Set(projects.flatMap(project => project.members.map(key)));
   const observedAt = new Date().toISOString();
   const byPid = new Map(processes.map(p => [p.pid, p]));
@@ -51,6 +66,7 @@ export async function candidates(projects, rows = undefined) {
     if (claimed.has(key(process))) continue;
     const root = await rootFor(manifestStart(process), cache) ?? await rootFor(process.cwd, cache);
     if (!root) continue;
+    if (await projectFreezeCli(root, process.projectHint, cliPackages)) continue;
     const id = projectId(root.path);
     const group = groups.get(id) ?? { id, name: basename(root.path), cwd: root.path, state: 'discovered',
       confidence: 'observed', observedAt, members: [], unresolved: [] };
