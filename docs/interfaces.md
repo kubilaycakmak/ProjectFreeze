@@ -25,6 +25,8 @@ Mutating commands wait for an operation result unless `--detach` is given. The o
 
 The live menu rescans on entry and periodically. Tab or Left/Right switches between Projects, Ports, Services, and History. Arrow keys and Page Up/Down move the selection or scroll details. Enter opens the selection or confirms a preview. Escape goes back or cancels. Search with `/` and use Space to select multiple projects. Ports and Services are read-only views. Ports reads local OS tables without probing the network. Linux Ports shows the current network namespace. Socket ownership or service manager access can depend on the current account. Discovered processes need explicit ownership review before control.
 
+Press `?` to open the grouped shortcut reference. In a narrow terminal, scroll with the arrow keys or Page Up/Down. Home and End jump to the top and bottom. Press `?` again or Esc to return to the current view. When the CLI entry point is observable, Projects omits ProjectFreeze CLI processes from other installations. Their listening sockets remain visible in Ports.
+
 Select one owned native project and press `k` to review force termination. The preview lists the exact process IDs. Press Enter to continue, then type `KILL` and press Enter again to authorize SIGKILL on Linux and macOS or TerminateProcess on Windows. Esc cancels either prompt. Force termination skips graceful shutdown and suppresses automatic restart. Use `w` to start again when a restart recipe is available. ProjectFreeze rejects a changed process set and directs projects with registered services or active dependents to their service shutdown workflow.
 
 ## Test Sleep and Wake

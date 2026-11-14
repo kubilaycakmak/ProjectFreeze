@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { createSocket } from 'node:dgram';
-import { copyFile, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { copyFile, cp, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { request } from 'node:http';
 import { createConnection, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { helper } from '../src/platform.js';
 
 const exec = promisify(execFile);
 const bin = fileURLToPath(new URL('../bin/projectfreeze.js', import.meta.url));
@@ -150,4 +151,43 @@ test('local port inventory and reviewed lifecycle controls preserve unrelated so
   await command('z', /Apply sleep\? \[y\/N\]/);
   await command('y', /sleep complete[\s\S]*\[sleeping\][\s\S]*q Quit/);
   menu.stdin.end('q\n');
+});
+
+test('other ProjectFreeze installations keep their ports without appearing as projects', {
+  skip: !['win32', 'linux'].includes(process.platform), timeout: 65000
+}, async t => {
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), 'pf-installation-')));
+  const other = join(cwd, 'projectfreeze');
+  const otherBin = join(other, 'bin', 'projectfreeze.js');
+  const otherState = join(cwd, `other-${'x'.repeat(96)}`);
+  const currentState = join(cwd, 'current');
+  const run = async (entry, state, ...args) => JSON.parse((await exec(process.execPath, [entry, '--json', ...args], {
+    cwd, env: { ...process.env, PROJECTFREEZE_HOME: state }, windowsHide: true, timeout: 25000
+  })).stdout).data;
+  let workload;
+  t.after(async () => {
+    workload?.kill();
+    await Promise.all([run(otherBin, otherState, 'daemon', 'stop').catch(() => {}),
+      run(bin, currentState, 'daemon', 'stop').catch(() => {})]);
+    await delay(500);
+    await rm(cwd, { recursive: true, force: true, maxRetries: 6 });
+  });
+  await mkdir(join(other, 'helpers'), { recursive: true });
+  const copy = name => cp(fileURLToPath(new URL(`../${name}`, import.meta.url)), join(other, name), { recursive: true });
+  await Promise.all([copy('bin'), copy('src'), copy('package.json'), copyFile(helper, join(other, 'helpers', basename(helper))),
+    copyFile(`${helper}.sha256`, join(other, 'helpers', `${basename(helper)}.sha256`))]);
+  const { pid } = await run(otherBin, otherState, 'daemon', 'start');
+  const script = join(other, 'stream.mjs');
+  await copyFile(fixture, script);
+  workload = spawn(process.execPath, [script, '0'], { cwd: other, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  await new Promise((resolve, reject) => {
+    workload.stdout.once('data', resolve);
+    workload.once('error', reject);
+    workload.once('exit', code => reject(new Error(`Stream fixture exited with code ${code}`)));
+  });
+  const observed = await run(bin, currentState, 'discover');
+  assert.ok(observed.some(project => project.cwd === other && project.processes.some(process => process.pid === workload.pid)));
+  assert.ok(observed.every(project => project.processes.every(process => process.pid !== pid)));
+  const inventory = await run(bin, currentState, 'ports');
+  assert.ok(inventory.some(row => row.pid === pid && row.address === '127.0.0.1' && row.scope === 'unassigned'));
 });

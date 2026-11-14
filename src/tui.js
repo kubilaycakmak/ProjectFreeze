@@ -27,6 +27,44 @@ const mutations = {
 const shortcuts = { f: 'freeze', u: 'resume', z: 'sleep', k: 'kill', w: 'wake', c: 'checkpoint', o: 'restore', e: 'reconcile' };
 const filters = ['all', 'running', 'discovered', 'sleeping', 'frozen', 'partial'];
 const sorts = ['activity', 'name', 'ports', 'CPU'];
+const helpSections = [
+  ['Navigation', [
+    ['↑ / ↓', 'Move or scroll'],
+    ['PgUp / PgDn', 'Move by one page'],
+    ['Home / End', 'Jump to first or last row'],
+    ['Enter', 'Open or confirm'],
+    ['Esc', 'Go back or cancel'],
+    ['?', 'Open or close help'],
+    ['q', 'Quit or detach']
+  ]],
+  ['Workloads', [
+    ['l', 'Launch a saved recipe'],
+    ['a', 'Review process ownership'],
+    ['f', 'Freeze processes'],
+    ['u', 'Resume frozen processes'],
+    ['z', 'Sleep gracefully'],
+    ['w', 'Wake from a saved recipe'],
+    ['k', 'Force terminate (two confirmations)']
+  ]],
+  ['Views and selection', [
+    ['Tab / Shift+Tab', 'Switch views'],
+    ['← / →', 'Switch views from a list'],
+    ['p', 'Open Ports (read-only)'],
+    ['v', 'Open Services (read-only)'],
+    ['h', 'Open History'],
+    ['/', 'Search the current view'],
+    ['Space', 'Toggle project selection'],
+    ['t', 'Filter projects'],
+    ['s', 'Sort projects'],
+    ['r', 'Refresh the current view']
+  ]],
+  ['Recovery', [
+    ['c', 'Create a checkpoint'],
+    ['o', 'Restore a checkpoint'],
+    ['e', 'Reconcile project state'],
+    ['x', 'Request operation cancellation']
+  ]]
+];
 
 function fit(value, width) {
   const parts = glyphs(clean(value));
@@ -42,6 +80,54 @@ function fit(value, width) {
   }
   if (total > width && width) { text += '…'; used++; }
   return text + ' '.repeat(Math.max(0, width - used));
+}
+
+function helpGroup([heading, items], span) {
+  const keyWidth = 15;
+  const inline = span >= 32;
+  const continuation = ' '.repeat(inline ? keyWidth + 4 : 4);
+  const available = Math.max(1, span - continuation.length);
+  const rows = [{ text: heading, tone: '1;36' }];
+  for (const [key, description] of items) {
+    const wrapped = [];
+    for (const word of description.split(' ')) {
+      const last = wrapped.at(-1);
+      if (last && last.length + word.length + 1 <= available) wrapped[wrapped.length - 1] += ` ${word}`;
+      else wrapped.push(word);
+    }
+    if (inline) rows.push({ text: `  ${fit(key, keyWidth)}  ${wrapped.shift()}` });
+    else rows.push({ text: `  ${key}`, tone: '1' });
+    rows.push(...wrapped.map(text => ({ text: continuation + text })));
+  }
+  return rows;
+}
+
+function helpRows(span) {
+  if (span < 96) return helpSections.flatMap((section, index) => [
+    ...(index ? [{ text: '' }] : []), ...helpGroup(section, span)
+  ]);
+  const gap = '    ';
+  const leftWidth = Math.floor((span - gap.length) / 2);
+  const rightWidth = span - leftWidth - gap.length;
+  const rows = [];
+  for (let offset = 0; offset < helpSections.length; offset += 2) {
+    const left = helpGroup(helpSections[offset], leftWidth);
+    const right = helpGroup(helpSections[offset + 1], rightWidth);
+    if (offset) rows.push({ text: '' });
+    for (let index = 0; index < Math.max(left.length, right.length); index++) {
+      rows.push({ text: `${fit(left[index]?.text ?? '', leftWidth)}${gap}${right[index]?.text ?? ''}`, tone: left[index]?.tone ?? right[index]?.tone });
+    }
+  }
+  return rows;
+}
+
+function helpPanel(span, budget, dialog) {
+  const rows = helpRows(span);
+  const capacity = Math.max(1, budget - 2);
+  dialog.scroll = clamp(dialog.scroll, 0, rows.length - capacity);
+  const end = Math.min(rows.length, dialog.scroll + capacity);
+  return [{ text: 'Keyboard shortcuts', tone: '1;36' }, ...rows.slice(dialog.scroll, end),
+    { text: rows.length > capacity ? `↑↓ Scroll  ·  ${dialog.scroll + 1}–${end} of ${rows.length}` : '', tone: '2' }];
 }
 
 function available(project, action) {
@@ -175,14 +261,11 @@ export async function interactive() {
   }
 
   function panelLines(budget) {
+    if (dialog?.kind === 'help') return helpPanel(width(), budget, dialog);
     const lines = dialog?.kind === 'input' ? [dialog.title, '', `› ${glyphs(dialog.text).slice(-Math.max(1, Math.floor((width() - 3) / 2))).join('')}`, '', 'Enter Apply   Esc Cancel'] :
       dialog?.kind === 'confirm' ? [dialog.title, '', ...dialog.lines] :
       dialog?.kind === 'adopt' ? ['Review ownership', 'Space toggles a process. Enter continues.', '',
         ...dialog.rows.map(row => `${dialog.approved.has(processKey(row)) ? '[x]' : '[ ]'} PID ${row.pid}  ${basename(row.image ?? '')}  TCP ${ports(row.ports) || '—'}`)] :
-      dialog?.kind === 'help' ? ['Keyboard shortcuts', '', 'Tab / Shift+Tab or ←/→    Switch views', '↑/↓  PageUp/PageDown     Move or scroll',
-        'Enter Inspect / Confirm   Space Select multiple   Esc Back', '/ Search   t Filter projects   s Sort projects   r Rescan',
-        'l Launch recipe   a Review ownership   f Freeze   u Resume', 'z Sleep   w Wake   k Force termination',
-        'c Checkpoint   o Restore   e Reconcile   x Cancel operation   q Quit', '', 'Ports and Services are read-only. Review ownership in Projects.'] :
       detail?.project ? projectPanel(detail.project) : detail?.listener ? [`${detail.listener.protocol.toUpperCase()} ${endpoint(detail.listener)}`, '', `PID ${detail.listener.pid ?? 'unknown'}`, detail.listener.image ?? '',
         `Project: ${detail.listener.name ?? 'Unassigned'}`, `Scope: ${detail.listener.scope}`, '', ...(detail.listener.project ? ['Enter Open project'] : [])] :
       detail?.service ? [detail.service.name, detail.service.description ?? '', '', detail.service.manager, `PID ${detail.service.pid ?? 'unknown'}`, 'Read-only'] :
@@ -208,7 +291,7 @@ export async function interactive() {
     const body = dialog || detail ? panelLines(budget) : listLines(span, budget);
     const heading = [{ text: ' ProjectFreeze ', tone: '1;36' }, { text: tabs, tone: '1' }];
     const result = operation ? `${operation.action}  ${operation.status ?? 'starting'}  ${operation.outcomes?.length ?? 0} result(s)  ${operation.pending ?? ''}` : status;
-    const controls = operation ? 'x Cancel operation   q Detach' : dialog ? 'Esc Cancel   q Quit' : detail ?
+    const controls = dialog?.kind === 'help' ? 'Esc Back   ? Close help' : operation ? 'x Cancel operation   q Detach' : dialog ? 'Esc Cancel   q Quit' : detail ?
       '↑↓ Scroll   Esc Back   Tab View   ? Help   q Quit' : 'Tab View   ↑↓ Move   Enter Inspect   / Search   l Launch   ? Help   q Quit';
     const frame = [...heading, ...body.slice(0, budget)];
     while (frame.length < rows - 2) frame.push({ text: '' });
@@ -290,13 +373,16 @@ export async function interactive() {
   }
 
   async function reviewKill(targets) {
-    if (targets.length !== 1 || !available(targets[0], 'kill')) {
-      status = 'Select one owned native project without registered services to force terminate.';
+    if (targets.length !== 1) {
+      status = 'Select one project to force terminate.';
       return;
     }
     const project = await request('inspect', { id: targets[0].id });
     if (ended) return;
-    if (!available(project, 'kill')) { status = 'The selected project no longer has eligible processes.'; return; }
+    if (!available(project, 'kill')) {
+      status = 'Force termination requires an owned native project with processes and no registered services.';
+      return;
+    }
     const members = project.processes.map(identity);
     confirm(`Force terminate ${project.name}?`, [mutations.kill[1], project.cwd, '',
       ...project.processes.map(row => `PID ${row.pid}  ${basename(row.image ?? '')}  TCP ${ports(row.ports) || '—'}`)], () => {
@@ -379,6 +465,10 @@ export async function interactive() {
       return;
     }
     if (dialog) {
+      if (dialog.kind === 'help') {
+        if (str === '?') { dialog = undefined; return; }
+        if (name === 'home' || name === 'end') dialog.scroll = name === 'home' ? 0 : Infinity;
+      }
       if (movement) dialog.scroll = Math.max(0, (dialog.scroll ?? 0) + movement);
       if (name === 'return' && dialog.kind === 'confirm') { const { run } = dialog; dialog = undefined; await run(); }
       return;
