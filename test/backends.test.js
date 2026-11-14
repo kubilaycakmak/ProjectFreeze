@@ -73,9 +73,10 @@ test('real Compose service identity, pause, sharing, and shutdown', {
       try { await restore(cwd, project, id, await composeTargets(project, [project]), () => {}); }
       catch (error) {
         if (process.env.GITHUB_ACTIONS === 'true') {
+          const direct = await exec('docker', ['start', '--checkpoint', id, running.id]).catch(failure => failure);
           const journal = await exec('journalctl', ['-u', 'docker', '--no-pager', '-n', '25']).catch(() => ({ stdout: '' }));
           const logs = await exec('/usr/bin/find', [checkpointDir, '-name', '*.log', '-print', '-exec', 'tail', '-n', '15', '{}', ';']).catch(() => ({ stdout: '' }));
-          console.error(journal.stdout, logs.stdout);
+          console.error(direct.stderr, journal.stdout, logs.stdout);
         }
         throw error;
       }
