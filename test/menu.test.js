@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { request } from 'node:http';
 import { createConnection, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -53,9 +53,10 @@ test('numbered menu finds listeners and sleeps and wakes a streaming workload', 
   const port = reservation.address().port;
   await new Promise(resolve => reservation.close(resolve));
   const ipv6 = process.platform === 'win32' ? await reserve('::1') : undefined;
-  let menu, first, second, id;
+  let menu, first, second, id, candidate;
   t.after(async () => {
     menu?.kill();
+    candidate?.kill();
     first?.close();
     second?.close();
     ipv6?.close();
@@ -69,7 +70,7 @@ test('numbered menu finds listeners and sleeps and wakes a streaming workload', 
     await rm(cwd, { recursive: true, force: true, maxRetries: 6 });
   });
   await exec(process.execPath, [fixture, '--recipe', recipe, String(port)], options);
-  menu = spawn(process.execPath, [bin, 'menu'], { ...options, stdio: ['pipe', 'pipe', 'pipe'] });
+  menu = spawn(process.execPath, [bin, 'menu'], { cwd, env, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
   let output = '';
   menu.stdout.setEncoding('utf8').on('data', chunk => { output += chunk; });
   const command = async (value, next) => {
@@ -78,6 +79,14 @@ test('numbered menu finds listeners and sleeps and wakes a streaming workload', 
     return until(() => output.slice(at).match(next) && output.slice(at), `Waiting for ${next}\n${output}`);
   };
   await until(() => output.includes('Project number'), 'menu did not open automatically');
+  const candidateDir = join(cwd, 'Unmanaged stream');
+  await mkdir(candidateDir);
+  await writeFile(join(candidateDir, 'package.json'), '{}');
+  const script = join(candidateDir, 'stream.mjs');
+  await copyFile(fixture, script);
+  candidate = spawn(process.execPath, [script, '0'], { cwd: candidateDir, windowsHide: true, stdio: 'ignore' });
+  await until(() => /Unmanaged stream \[discovered\]  TCP \d+/.test(output), 'idle menu did not discover an unmanaged listener');
+  candidate.kill();
   await command('l', /Path to JSON/);
   await command(recipe, /Apply run/);
   const view = await command('y', /run complete[\s\S]*Project number/);
