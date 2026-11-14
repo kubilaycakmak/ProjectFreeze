@@ -242,7 +242,10 @@ export async function stageLaunch(argv, cwd, env, job, cgroup, onExit) {
 
 export async function containerPids(project) {
   if (windows && project.job) {
-    return new Set((await command(helper, ['members', project.job])).trim().split(/\s+/).map(Number));
+    return new Set((await command(helper, ['job-scan', project.job])).split('\n').filter(Boolean).map(line => {
+      const [pid, , birth] = line.split('\t');
+      return key({ pid: Number(pid), birth, boot: project.root.boot });
+    }));
   }
   if (linux && project.cgroup) {
     const walk = async dir => {

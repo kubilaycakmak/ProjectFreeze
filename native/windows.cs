@@ -44,7 +44,7 @@ static class Native {
     [DllImport("kernel32", SetLastError = true, CharSet = CharSet.Unicode)] static extern IntPtr CreateJobObject(IntPtr security, string name);
     [DllImport("kernel32", SetLastError = true, CharSet = CharSet.Unicode)] static extern IntPtr OpenJobObject(uint access, bool inherit, string name);
     [DllImport("kernel32")] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
-    [DllImport("kernel32")] static extern bool QueryInformationJobObject(IntPtr job, int info, IntPtr buffer, int length, out int written);
+    [DllImport("kernel32")] static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool result);
     [DllImport("kernel32", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool CreateProcess(string app, StringBuilder args, IntPtr psec, IntPtr tsec, bool inherit, uint flags, IntPtr env, string cwd, ref Startup startup, out Child child);
     [DllImport("kernel32")] static extern uint ResumeThread(IntPtr thread);
     [DllImport("kernel32")] static extern bool TerminateProcess(IntPtr process, uint code);
@@ -148,7 +148,7 @@ static class Native {
         } finally { CloseHandle(handle); }
     }
 
-    static int Scan(bool full) {
+    static int Scan(bool full, IntPtr job) {
         IntPtr snapshot = CreateToolhelp32Snapshot(2, 0);
         if (snapshot == new IntPtr(-1)) return 4;
         try {
@@ -158,6 +158,8 @@ static class Native {
                 IntPtr handle = OpenProcess(Query | Synchronize, false, (int)entry.pid);
                 if (handle == IntPtr.Zero) continue;
                 try {
+                    bool member;
+                    if (job != IntPtr.Zero && (!IsProcessInJob(handle, job, out member) || !member)) continue;
                     long created, exited, kernel, user;
                     if (!Owned(handle) || WaitForSingleObject(handle, 0) != 258 || !GetProcessTimes(handle, out created, out exited, out kernel, out user)) continue;
                     int size = 32768;
@@ -217,18 +219,11 @@ static class Native {
         } finally { CloseHandle(job); }
     }
 
-    static int Members(string name) {
+    static int JobScan(string name) {
         IntPtr job = OpenJobObject(4, false, name);
         if (job == IntPtr.Zero) return Marshal.GetLastWin32Error() == 2 ? 3 : 4;
-        const int capacity = 131072;
-        IntPtr data = Marshal.AllocHGlobal(capacity);
-        try {
-            int written;
-            if (!QueryInformationJobObject(job, 3, data, capacity, out written)) return 4;
-            int count = Marshal.ReadInt32(data, 4);
-            for (int i = 0; i < count; i++) Console.WriteLine(Marshal.ReadIntPtr(data, 8 + i * IntPtr.Size).ToInt64());
-            return 0;
-        } finally { Marshal.FreeHGlobal(data); CloseHandle(job); }
+        try { return Scan(false, job); }
+        finally { CloseHandle(job); }
     }
 
     static int SecureDirectory(string path) {
@@ -253,11 +248,11 @@ static class Native {
 
     static int Main(string[] args) {
         try {
-            if (args.Length == 1 && args[0] == "scan") return Scan(false);
-            if (args.Length == 1 && args[0] == "discover") return Scan(true);
+            if (args.Length == 1 && args[0] == "scan") return Scan(false, IntPtr.Zero);
+            if (args.Length == 1 && args[0] == "discover") return Scan(true, IntPtr.Zero);
+            if (args.Length == 2 && args[0] == "job-scan") return JobScan(args[1]);
             if (args.Length == 1 && args[0] == "boot") return Boot();
             if (args.Length == 2 && args[0] == "secure-directory") return SecureDirectory(args[1]);
-            if (args.Length == 2 && args[0] == "members") return Members(args[1]);
             if (args.Length >= 3 && args[0] == "launch") return Launch(args);
             int pid;
             if (args.Length == 3 && Int32.TryParse(args[1], out pid)) return Control(args[0], pid, args[2]);

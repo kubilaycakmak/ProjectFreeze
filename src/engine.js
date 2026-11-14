@@ -244,7 +244,7 @@ export class Engine {
     for (const row of rows) {
       if (stopped(row) || foreign.has(key(row)) || project.excluded.some(item => matches(item, row)) ||
           project.members.some(item => matches(item, row))) continue;
-      if (contained?.has(row.pid) || (!contained && groupProof && row.group === project.root.pid && row.group === groupProof.group)) {
+      if (contained?.has(windows ? key(row) : row.pid) || (!contained && groupProof && row.group === project.root.pid && row.group === groupProof.group)) {
         project.members.push({ ...identity(row), source: 'contained' });
       }
     }

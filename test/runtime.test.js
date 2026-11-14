@@ -100,8 +100,15 @@ test('real ownership, lifecycle, IPC authentication, public workload policy and 
   assert.equal(await healthy(url), false);
   await unlink(join(project, 'stop.request'));
   assert.equal((await run(['wake', id])).data.status, 'complete');
-  await eventually(async () => (await inspect()).processCount === 2, 'discover managed job/group member');
-  assert.notEqual(+(await readFile(join(project, 'worker.pid'), 'utf8')), worker);
+  let lastInspection;
+  await eventually(async () => {
+    lastInspection = await inspect();
+    const pid = Number(await readFile(join(project, 'worker.pid'), 'utf8'));
+    return pid !== worker && lastInspection.processes.some(process => process.pid === pid);
+  }, 'discover managed job/group member').catch(error => {
+    error.message += `; observed ${JSON.stringify(lastInspection?.processes)}`;
+    throw error;
+  });
   assert.equal((await run(['freeze', id])).data.status, 'complete');
   assert.equal((await run(['resume', id])).data.status, 'complete');
   assert.equal((await run(['sleep', id])).data.status, 'complete');
