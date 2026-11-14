@@ -50,7 +50,8 @@ test('real Compose service identity, pause, sharing, and shutdown', {
   const project = { id: 'fixture', cwd, recipe: { containers: [service] } };
   let checkpointDir;
   try {
-    await writeFile(join(cwd, 'compose.yaml'), 'services:\n  worker:\n    image: busybox:1.37\n    command: ["sleep", "120"]\n    restart: "no"\n    network_mode: none\n');
+    const network = process.env.PF_TEST_DOCKER_CHECKPOINT === '1' ? 'host' : 'none';
+    await writeFile(join(cwd, 'compose.yaml'), `services:\n  worker:\n    image: busybox:1.37\n    command: ["sleep", "120"]\n    restart: "no"\n    network_mode: ${network}\n`);
     await compose('up', '-d', '--pull', 'never');
     const [running] = await composeTargets(project, [project]);
     assert.equal(running.running, true);

@@ -111,8 +111,8 @@ export async function checkpoint(state, project, root, backend, targets, mark, v
       throw new Fault('UNSUPPORTED', 'Docker checkpoint requires a local experimental Linux Docker engine with CRIU.');
     }
     const container = await inspectDocker(eligible[0].id);
-    if (container.Mounts.length || container.HostConfig.Privileged || container.HostConfig.NetworkMode !== 'none') {
-      throw new Fault('UNSUPPORTED', 'This Docker checkpoint scope requires network mode none, no mounts, and an unprivileged container.');
+    if (container.Mounts.length || container.HostConfig.Privileged || container.HostConfig.AutoRemove || container.HostConfig.NetworkMode !== 'host') {
+      throw new Fault('UNSUPPORTED', 'This Docker checkpoint backend requires an existing host-network container with no mounts, privilege escalation, or auto-removal. Use freeze or sleep for isolated-network containers.');
     }
     if (!isAbsolute(info.DockerRootDir)) throw new Fault('DENIED', 'Docker did not report a local checkpoint store.');
     const imagePath = join(info.DockerRootDir, 'containers', container.Id, 'checkpoints', id);
