@@ -51,6 +51,8 @@ Mutating commands wait for an operation result unless `--detach` is given. The o
 
 `ready` connects to a loopback TCP port observed on an owned process. `stop` should implement application-specific graceful shutdown. Without `stop`, POSIX uses SIGTERM. Windows requires `stop` or specifically approved `--force` termination. `restart: "on-failure"` permits up to three retries while the launch supervisor remains available. Linux may specify `cgroup` as an existing delegated cgroup v2 parent directory. `containers` entries name a Compose `project`, `service`, and explicit `shared` boolean. Exclusive services must be existing containers with matching Compose labels and restart policy `no`.
 
+On Linux, set `systemd` to an array such as `[{"unit":"worker.service","shared":false},{"unit":"worker.timer","shared":false}]`. Link the reviewed unit files into your user manager with `systemctl --user link /absolute/project/worker.service /absolute/project/worker.timer`. Keep unit files within the project, restrict write access to their owner, set the service `WorkingDirectory` to the project, and configure `SendSIGKILL=no`. The adapter controls only the exact loaded units. It rejects drop-ins and activation or lifecycle dependencies outside the exclusive reviewed set. Active timers in that set are stopped before service suspension or shutdown and restarted after recovery.
+
 ## MCP
 
 ```json

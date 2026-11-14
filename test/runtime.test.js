@@ -109,7 +109,7 @@ test('real ownership, lifecycle, IPC authentication, public workload policy and 
   assert.equal(outside.exitCode, null);
 
   const endpoint = JSON.parse(await readFile(join(state, 'endpoint.json'), 'utf8'));
-  const socket = createConnection(windows ? { host: '127.0.0.1', port: endpoint.port } : { path: join(state, endpoint.socket) });
+  const socket = createConnection(endpoint.port ? { host: '127.0.0.1', port: endpoint.port } : { path: join(state, endpoint.socket) });
   const rejected = new Promise(resolve => { socket.once('close', resolve); socket.on('error', () => {}); });
   socket.on('connect', () => socket.write('POST /daemon-stop HTTP/1.1\r\nHost: localhost\r\n\r\n'));
   await rejected;

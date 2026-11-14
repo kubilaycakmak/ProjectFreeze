@@ -12,7 +12,7 @@ flowchart LR
   Engine --> CRIU[Linux CRIU]
 ```
 
-The daemon serializes mutations and journals pending effects and outcomes. POSIX uses a socket in a user-owned 0700 directory. Windows uses a loopback-only connection and an endpoint file in a directory with a restricted user and SYSTEM ACL. Both transports authenticate each connection and its request and response using fresh nonces and HMAC. There is no HTTP management surface. Same-account programs that can read state are inside the trust boundary. The daemon performs no elevation, firewall edits, service installation, or workload downloads. A user-approved command executes with that user's permissions.
+The daemon serializes mutations and journals pending effects and outcomes. POSIX uses a socket in a user-owned 0700 directory or loopback when the state path exceeds the socket system limit. Windows uses loopback and an endpoint file in a directory with a restricted user and SYSTEM ACL. Both transports authenticate each connection and its request and response using fresh nonces and HMAC. There is no HTTP management surface. Same-account programs that can read state are inside the trust boundary. The daemon performs no elevation, firewall edits, service installation, or workload downloads. A user-approved command executes with that user's permissions.
 
 ## Scope and metrics
 
@@ -20,7 +20,7 @@ Candidates combine process metadata, manifest paths, executable metadata, ancest
 
 CPU is sampled as percent of one logical core. Resident-memory figures sum observed process RSS and can count shared pages more than once. A project dependency is listed by reference. Compose services referenced by multiple projects are treated as shared. Listening port results describe the authorized TCP scan. An absent result can also indicate an out-of-scope listener.
 
-One canonical directory currently maps to one durable project. Nearby monorepo manifests can produce separate discovery groups. Detached or reparented processes can remain outside verified containment and may require individual review. The current process scan provides no reliable historical command reconstruction. External service managers and scheduler entries have no lifecycle adapter in this candidate. If a supervisor can replace your workload, its activation policy must be handled separately.
+One canonical directory currently maps to one durable project. Nearby monorepo manifests can produce separate discovery groups. Detached or reparented processes can remain outside verified containment and may require individual review. The current process scan provides no reliable historical command reconstruction. The systemd adapter supports explicit Linux user services and timers. macOS launchd, Windows Service Control Manager and Task Scheduler, cron, and other external supervisors still require separate lifecycle management.
 
 ## Recovering a workload
 

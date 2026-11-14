@@ -9,6 +9,7 @@ export type Recipe = {
   argv: string[]; cwd: string; env: string[];
   dependencies: string[]; ready?: Port; stop?: string[]; timeout: number;
   restart: 'never' | 'on-failure'; cgroup?: string; containers: Container[];
+  systemd: { unit: string; shared: boolean }[];
 };
 export type Container = { project: string; service: string; shared: boolean };
 export type Member = Identity & { source: 'adopted' | 'launched' | 'contained'; suspended?: boolean };
@@ -16,6 +17,7 @@ export type Project = {
   id: string; name: string; cwd: string; state: string; members: Member[];
   excluded: Identity[]; root?: Identity; recipe?: Recipe; job?: string; cgroup?: string;
   frozenContainers?: string[]; stoppedContainers?: string[]; sleepingIntent?: boolean;
+  frozenUnits?: string[]; stoppedUnits?: string[];
 };
 export type Outcome = { target: string; status: string; code?: string; message?: string };
 export type Operation = {

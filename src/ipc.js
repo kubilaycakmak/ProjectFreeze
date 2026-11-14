@@ -74,7 +74,7 @@ function validate(action, input) {
 const validBoot = value => typeof value === 'string' && /^[a-f0-9-]{12,80}$/i.test(value);
 
 function transport(record, dir) {
-  if (windows && Number.isInteger(record.port) && record.port > 0 && record.port <= 65535) return { host: '127.0.0.1', port: record.port };
+  if (Number.isInteger(record.port) && record.port > 0 && record.port <= 65535) return { host: '127.0.0.1', port: record.port };
   if (!windows && /^pf-[a-f0-9]{12}\.sock$/.test(record.socket)) return { path: join(dir, record.socket) };
   throw new Fault('UNAVAILABLE', 'Local daemon endpoint is invalid.');
 }
@@ -89,6 +89,8 @@ export async function daemon() {
   const engine = new Engine(store, dir);
   const secret = nonce();
   const name = `pf-${nonce().slice(0, 12)}.sock`;
+  const socketPath = join(dir, name);
+  const loopback = windows || Buffer.byteLength(socketPath) >= 100;
   const connections = new Set();
   let closing = false;
   let timer;
@@ -142,7 +144,7 @@ export async function daemon() {
     for (const socket of connections) socket.destroy();
     await new Promise(resolve => server.close(resolve));
     await unlink(recordPath(dir)).catch(() => {});
-    if (!windows) await unlink(join(dir, name)).catch(() => {});
+    if (!loopback) await unlink(socketPath).catch(() => {});
     while (engine.current || engine.tracking) await delay(100);
     for (const timer of engine.timers.values()) clearTimeout(timer);
     store.close();
@@ -154,10 +156,10 @@ export async function daemon() {
   if (!windows && old && /^pf-[a-f0-9]{12}\.sock$/.test(old.socket)) await unlink(join(dir, old.socket)).catch(() => {});
   await new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(windows ? { host: '127.0.0.1', port: 0, exclusive: true } : { path: join(dir, name), exclusive: true }, resolve);
+    server.listen(loopback ? { host: '127.0.0.1', port: 0, exclusive: true } : { path: socketPath, exclusive: true }, resolve);
   });
-  if (!windows) await chmod(join(dir, name), 0o600);
-  const record = { v: protocol, secret, ...(windows ? { port: server.address().port } : { socket: name }) };
+  if (!loopback) await chmod(socketPath, 0o600);
+  const record = { v: protocol, secret, ...(loopback ? { port: server.address().port } : { socket: name }) };
   const staged = join(dir, `endpoint-${nonce().slice(0, 12)}.json`);
   await writeFile(staged, line(record), { flag: 'wx', mode: 0o600 });
   await rename(staged, recordPath(dir));

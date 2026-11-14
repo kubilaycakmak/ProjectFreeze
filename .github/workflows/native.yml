@@ -35,6 +35,16 @@ jobs:
           node-version: ${{ matrix.node }}
       - run: npm run build:native
       - run: npm test
+      - name: Verify user service and timer control
+        if: matrix.runner == 'ubuntu-24.04' && matrix.node == 24
+        shell: bash
+        run: |
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          sudo loginctl enable-linger "$(id -un)"
+          trap 'sudo loginctl disable-linger "$(id -un)"' EXIT
+          for i in {1..20}; do test -S "$XDG_RUNTIME_DIR/bus" && break; sleep 1; done
+          PF_TEST_SYSTEMD=1 node --test test/systemd.test.js
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: matrix.node == 24
         with:

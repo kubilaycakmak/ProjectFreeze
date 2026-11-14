@@ -10,7 +10,8 @@ const recipe = { type: 'object', properties: {
   stop: { type: 'array', items: id }, timeout: { type: 'integer', minimum: 100, maximum: 120000 },
   ready: { type: 'object', properties: { address: { enum: ['127.0.0.1', '::1'] }, port: { type: 'integer', minimum: 1, maximum: 65535 } }, required: ['address', 'port'] },
   restart: { enum: ['never', 'on-failure'] }, cgroup: id,
-  containers: { type: 'array', items: { type: 'object', properties: { project: id, service: id, shared: { type: 'boolean' } }, required: ['project', 'service', 'shared'] } }
+  containers: { type: 'array', items: { type: 'object', properties: { project: id, service: id, shared: { type: 'boolean' } }, required: ['project', 'service', 'shared'] } },
+  systemd: { type: 'array', items: { type: 'object', properties: { unit: id, shared: { type: 'boolean' } }, required: ['unit', 'shared'] } }
 }, required: ['argv', 'cwd'], additionalProperties: false };
 const tool = (name, description, properties = {}, required = [], mutation = false) => ({
   name, description, inputSchema: { type: 'object', properties, required, additionalProperties: false },

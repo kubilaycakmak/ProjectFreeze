@@ -51,7 +51,7 @@ export async function interactive() {
       lines.push(`${detail.name}  ${detail.state}  ${detail.confidence}`, detail.cwd,
         `Processes ${detail.processCount}   CPU ${detail.cpuPercent?.toFixed(1) ?? '?'}%   RSS sum ${detail.rssSum ? (detail.rssSum / 2 ** 20).toFixed(1) + ' MiB' : '?'}`,
         `TCP listeners ${detail.ports.map(port => `[${port.address}]:${port.port}`).join(' ') || 'none observed'}`,
-        `Dependencies ${detail.dependencies.join(', ') || 'none'}   Compose services ${detail.containers.length}`,
+        `Dependencies ${detail.dependencies.join(', ') || 'none'}   Compose ${detail.containers.length}   systemd ${detail.systemd.length}`,
         `${detail.unresolved?.length ?? 0} unresolved   ${detail.operations?.filter(op => ['running', 'interrupted', 'partial'].includes(op.status)).length ?? 0} incomplete operations`);
       if (expanded) {
         const rows = detail.processes;

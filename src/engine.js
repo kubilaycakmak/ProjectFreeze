@@ -8,6 +8,7 @@ import { Fault, problem } from './errors.js';
 import { checkpoint, composeTargets, containerAction, restore } from './integrations.js';
 import { command, containerPids, control, executable, identity, key, matches, scan, stageLaunch, windows } from './platform.js';
 import { launchEnv, prepareCgroup, recipe } from './recipe.js';
+import { serviceAction, serviceTargets, systemdPids } from './systemd.js';
 
 const suspended = row => row.state === 'T';
 const stopped = row => row.state === 'Z' || row.state === 'X';
@@ -66,7 +67,7 @@ export class Engine {
     const rows = await scan();
     const discovered = await candidates(projects, rows);
     const observed = discovered.map(group => ({ ...group, processes: group.members, processCount: group.members.length,
-      ports: group.members.flatMap(member => member.ports), dependencies: [], containers: [] }));
+      ports: group.members.flatMap(member => member.ports), dependencies: [], containers: [], systemd: [] }));
     if (action === 'discover') return observed;
     const managed = projects.map(project => summarize(project, rows, observed.find(d => d.id === project.id)));
     const combined = [...managed, ...observed.filter(candidate => !projects.some(p => p.id === candidate.id))];
@@ -180,6 +181,7 @@ export class Engine {
     }
     project.recipe = configuration;
     job.op.projects = [id];
+    if (configuration.systemd.length) await serviceTargets(project, all);
     try { await this.launch(job, project); }
     catch (error) { project.state = 'partial'; this.record(job, project, id, 'failed', error); }
   }
@@ -274,7 +276,15 @@ export class Engine {
         await this.track(project, rows);
         const live = visible(rows, project);
         if (['running', 'adopted'].includes(project.state) && !live.length) project.state = 'exited';
-        if (project.state === 'frozen' && (!project.frozenContainers?.length && !live.length || live.some(row => !suspended(row)))) project.state = 'partial';
+        if (project.state === 'frozen') {
+          const units = await serviceTargets(project, projects);
+          const containers = await composeTargets(project, projects);
+          const servicePids = new Set((await Promise.all(units.map(systemdPids))).flat());
+          const observed = live.filter(row => !servicePids.has(row.pid));
+          if ((!live.length && !units.some(unit => unit.state?.FreezerState === 'frozen') && !containers.some(target => target.paused)) ||
+              observed.some(row => !suspended(row)) || units.some(unit => unit.state?.ActiveState === 'active' && unit.state.FreezerState !== 'frozen') ||
+              containers.some(target => target.running && !target.paused)) project.state = 'partial';
+        }
         if (JSON.stringify(project) !== before) this.store.save(project);
       }
     } finally { this.tracking = false; }
@@ -288,9 +298,17 @@ export class Engine {
       throw new Fault('BUSY', 'An active unselected project still uses this dependency.');
     }
     const targets = await composeTargets(project, all);
+    const units = await serviceTargets(project, all);
     project.state = 'freezing';
     project.frozenContainers ??= [];
     this.pending(job, project, 'freeze barrier started');
+    for (const target of units.filter(unit => unit.timer && unit.state.ActiveState === 'active')) {
+      await this.changeUnit(job, project, 'stop', target, 'stoppedUnits');
+    }
+    const afterTimers = await serviceTargets(project, all);
+    for (const target of afterTimers.filter(unit => !unit.shared && !unit.timer && unit.state.ActiveState === 'active' && unit.state.FreezerState !== 'frozen')) {
+      await this.changeUnit(job, project, 'freeze', target, 'frozenUnits');
+    }
     for (const target of targets) {
       this.check(job);
       if (target.shared) { this.record(job, project, `${target.project}/${target.service}`, 'shared'); continue; }
@@ -306,8 +324,11 @@ export class Engine {
       this.check(job);
       const rows = await scan(false);
       await this.track(project, rows);
-      const members = visible(rows, project);
-      if (!members.length && !targets.some(t => t.running && !t.shared)) throw new Fault('NOT_FOUND', 'No live owned resources are available to freeze.');
+      const servicePids = new Set((await Promise.all(units.map(systemdPids))).flat());
+      const members = visible(rows, project).filter(row => !servicePids.has(row.pid));
+      if (!members.length && !targets.some(t => t.running && !t.shared) && !units.some(u => !u.shared && u.state.ActiveState === 'active')) {
+        throw new Fault('NOT_FOUND', 'No live owned resources are available to freeze.');
+      }
       for (const member of members.filter(row => !suspended(row))) {
         this.check(job);
         this.pending(job, project, `freeze process ${key(member)}`);
@@ -316,6 +337,10 @@ export class Engine {
       }
       const signature = members.map(key).sort().join(',');
       if (signature === previous && members.every(suspended)) {
+        const verified = await serviceTargets(project, all);
+        if (verified.some(u => !u.shared && (u.timer ? u.state.ActiveState === 'active' : u.state.ActiveState === 'active' && u.state.FreezerState !== 'frozen'))) {
+          throw new Fault('PARTIAL', 'A user systemd unit changed state during the freeze barrier.');
+        }
         project.state = 'frozen';
         this.record(job, project, project.id, 'frozen');
         return;
@@ -328,8 +353,10 @@ export class Engine {
 
   async resume(job, project) {
     const targets = await composeTargets(project, this.store.projects());
+    const units = await serviceTargets(project, this.store.projects());
     project.state = 'resuming';
     this.pending(job, project, 'resume recorded suspensions');
+    await this.restoreUnits(job, project, units, 'thaw', 'frozenUnits');
     const rows = await scan(false);
     for (const member of project.members.filter(m => m.suspended)) {
       this.check(job);
@@ -353,11 +380,15 @@ export class Engine {
     }
     const after = visible(await scan(false), project);
     const currentTargets = await composeTargets(project, this.store.projects());
-    if (after.some(row => suspended(row) || ['t', 'M', '?'].includes(row.state)) || currentTargets.some(t => !t.shared && t.paused)) {
+    const currentUnits = await serviceTargets(project, this.store.projects());
+    if (after.some(row => suspended(row) || ['t', 'M', '?'].includes(row.state)) || currentTargets.some(t => !t.shared && t.paused) ||
+        currentUnits.some(unit => unit.state?.FreezerState === 'frozen')) {
       throw new Fault('PARTIAL', 'A member remains externally suspended or its execution state cannot be verified.');
     }
     if (after.length) await this.ready(job, project);
-    project.state = after.length || targets.some(t => t.running) ? (project.root ? 'running' : 'adopted') : 'exited';
+    await this.restoreUnits(job, project, units, 'start', 'stoppedUnits');
+    project.state = after.length || targets.some(t => t.running) || currentUnits.some(unit => unit.state?.ActiveState === 'active')
+      ? (project.root ? 'running' : 'adopted') : 'exited';
     this.record(job, project, project.id, project.state);
   }
 
@@ -369,6 +400,11 @@ export class Engine {
       throw new Fault('BUSY', 'An active project still uses this dependency.');
     }
     const targets = await composeTargets(project, all);
+    const units = await serviceTargets(project, all);
+    if (units.some(u => !u.shared && u.state.FreezerState === 'frozen')) throw new Fault('BUSY', 'Resume the systemd services before graceful shutdown.');
+    if (targets.some(target => !target.shared && target.running) && input.force !== true) {
+      throw new Fault('DENIED', 'Docker stop can force termination after its deadline. Review the exclusive containers and supply --force.');
+    }
     const before = await scan();
     await this.track(project, before);
     const members = visible(before, project);
@@ -377,6 +413,9 @@ export class Engine {
     project.sleepingIntent = true;
     project.state = 'sleeping-in-progress';
     this.pending(job, project, 'disable managed restart and begin shutdown');
+    const activeUnits = units.filter(unit => !unit.shared && unit.state.ActiveState === 'active');
+    for (const target of activeUnits.filter(unit => unit.timer)) await this.changeUnit(job, project, 'stop', target, 'stoppedUnits');
+    const servicePids = new Set((await Promise.all(activeUnits.map(systemdPids))).flat());
     const portKeys = new Set(members.flatMap(row => row.ports.map(port => `${port.address}:${port.port}`)));
     if (members.length && project.recipe.stop) {
       const env = launchEnv(project.recipe, process.env);
@@ -385,13 +424,17 @@ export class Engine {
       this.pending(job, project, 'run reviewed application shutdown command');
       await command(executablePath, project.recipe.stop.slice(1), { cwd: project.cwd, env, timeout: project.recipe.timeout });
     } else if (!windows) {
-      for (const row of [...members].reverse()) {
+      for (const row of [...members].reverse().filter(row => !servicePids.has(row.pid))) {
         this.check(job);
         this.pending(job, project, `request shutdown of process ${key(row)}`);
         try { await control('stop', row); }
         catch (error) { if (error.code !== 'NOT_FOUND') throw error; }
         this.record(job, project, String(row.pid), 'shutdown-requested');
       }
+    }
+    const afterTimers = await serviceTargets(project, all);
+    for (const target of afterTimers.filter(unit => !unit.shared && !unit.timer && unit.state.ActiveState === 'active')) {
+      await this.changeUnit(job, project, 'stop', target, 'stoppedUnits');
     }
     let remaining = members;
     const deadline = Date.now() + project.recipe.timeout;
@@ -420,7 +463,6 @@ export class Engine {
       this.check(job);
       if (target.shared) { this.record(job, project, `${target.project}/${target.service}`, 'shared'); continue; }
       if (!target.running) continue;
-      if (input.force !== true) throw new Fault('PARTIAL', 'Docker stop can force termination after its deadline. Approve the listed exclusive containers with --force.');
       this.pending(job, project, `stop container ${target.id}`);
       await containerAction('stop', target.id, project.recipe.timeout);
       project.stoppedContainers = [...new Set([...(project.stoppedContainers ?? []), target.id])];
@@ -439,6 +481,8 @@ export class Engine {
     if (!['sleeping', 'exited', 'partial'].includes(project.state)) throw new Fault('BUSY', 'Only a stopped project with a reviewed recipe can wake.');
     if (visible(await scan(false), project).length) throw new Fault('BUSY', 'Verified processes already exist. Reconcile before relaunching.');
     const targets = await composeTargets(project, this.store.projects());
+    const units = await serviceTargets(project, this.store.projects());
+    await this.restoreUnits(job, project, units.filter(u => !u.timer), 'start', 'stoppedUnits', true);
     for (const id of [...(project.stoppedContainers ?? [])]) {
       this.check(job);
       const target = targets.find(t => t.id === id && !t.shared);
@@ -449,6 +493,29 @@ export class Engine {
       this.record(job, project, id, 'started');
     }
     await this.launch(job, project);
+    await this.restoreUnits(job, project, units.filter(u => u.timer), 'start', 'stoppedUnits', true);
+  }
+
+  async changeUnit(job, project, action, target, field, remove = false) {
+    this.check(job);
+    this.pending(job, project, `${action} systemd user unit ${target.unit}`);
+    await serviceAction(action, target, project.recipe?.timeout ?? 10000);
+    const previous = project[field] ?? [];
+    project[field] = remove ? previous.filter(name => name !== target.unit) : [...new Set([...previous, target.unit])];
+    this.record(job, project, target.unit, ({ start: 'started', stop: 'stopped', freeze: 'frozen', thaw: 'resumed' })[action]);
+  }
+
+  async restoreUnits(job, project, units, action, field, subset = false) {
+    for (const unit of [...(project[field] ?? [])]) {
+      const target = units.find(t => t.unit === unit && !t.shared);
+      if (!target && subset) continue;
+      if (!target) throw new Fault('DENIED', 'Previously changed systemd unit is outside current exclusive ownership.');
+      const already = action === 'thaw' ? target.state.FreezerState === 'running' : target.state.ActiveState === 'active';
+      if (already) {
+        project[field] = project[field].filter(name => name !== unit);
+        this.record(job, project, unit, 'already-active');
+      } else await this.changeUnit(job, project, action, target, field, true);
+    }
   }
 
   async capture(job, project, input) {
@@ -457,6 +524,7 @@ export class Engine {
     const root = alive(rows, project.root);
     const targets = await composeTargets(project, this.store.projects());
     const backend = input.backend ?? 'criu';
+    if (project.recipe?.systemd?.length) throw new Fault('UNSUPPORTED', 'A process checkpoint cannot capture the registered systemd service set.');
     if (!['criu', 'docker'].includes(backend)) throw new Fault('USAGE', 'Choose the criu or docker checkpoint backend.');
     if (backend === 'criu') {
       if (project.excluded.length || visible(rows, project).some(row => row.state === 'T' || row.state === 't')) {
@@ -480,6 +548,7 @@ export class Engine {
   }
 
   async restore(job, project, input) {
+    if (project.recipe?.systemd?.length) throw new Fault('UNSUPPORTED', 'Restore requires the original process and container scope.');
     if (visible(await scan(false), project).length) throw new Fault('BUSY', 'Stop the active workload before restoring a checkpoint.');
     const targets = await composeTargets(project, this.store.projects());
     project.state = 'restoring';
@@ -510,7 +579,7 @@ export class Engine {
       await this.track(project, rows);
       const live = visible(rows, project);
       const interrupted = this.store.history().find(op => op.status === 'interrupted' && op.projects.includes(project.id) && op.pending);
-      if (interrupted || live.some(row => suspended(row) || ['t', 'M', '?'].includes(row.state)) || project.frozenContainers?.length) {
+      if (interrupted || live.some(row => suspended(row) || ['t', 'M', '?'].includes(row.state)) || project.frozenContainers?.length || project.frozenUnits?.length) {
         project.state = project.state === 'frozen' && live.every(suspended) ? 'frozen' : 'partial';
       } else if (live.length) project.state = project.root ? 'running' : 'adopted';
       else if (project.state !== 'sleeping') project.state = 'exited';

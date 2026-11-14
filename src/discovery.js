@@ -84,7 +84,7 @@ export function summarize(project, rows, discovered) {
     processes, processCount: processes.length, ports: [...owners.values()],
     rssSum: processes.some(p => p.rss !== undefined) ? processes.reduce((n, p) => n + (p.rss ?? 0), 0) : undefined,
     cpuPercent: processes.some(p => p.cpuPercent !== undefined) ? processes.reduce((n, p) => n + (p.cpuPercent ?? 0), 0) : undefined,
-    dependencies: project.recipe?.dependencies ?? [], containers: project.recipe?.containers ?? [],
+    dependencies: project.recipe?.dependencies ?? [], containers: project.recipe?.containers ?? [], systemd: project.recipe?.systemd ?? [],
     excluded: project.excluded, unresolved: discovered?.unresolved ?? [], observedAt: new Date().toISOString(),
     metrics: 'CPU is sampled as percent of one core. RSS sums resident pages and can count shared pages more than once.' };
 }

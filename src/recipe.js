@@ -4,6 +4,7 @@ import { isAbsolute, join } from 'node:path';
 import { Fault } from './errors.js';
 import { directory } from './discovery.js';
 import { linux } from './platform.js';
+import { validSystemd } from './systemd.js';
 
 const envName = /^[A-Za-z_][A-Za-z_0-9]*$/;
 const projectName = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/;
@@ -16,16 +17,19 @@ export async function recipe(input) {
   if (!input || !argv(input.argv)) throw new Fault('USAGE', 'Supply an executable and literal arguments.');
   if (input.stop !== undefined && !argv(input.stop)) throw new Fault('USAGE', 'The shutdown command must be an argument array.');
   const cwd = await directory(input.cwd ?? '.');
-  const { env = [], dependencies = [], timeout = 10000, restart = 'never', ready, stop, cgroup, containers = [] } = input;
+  const { env = [], dependencies = [], timeout = 10000, restart = 'never', ready, stop, cgroup, containers = [], systemd = [] } = input;
   if (!Array.isArray(env) || !env.every(s => typeof s === 'string' && envName.test(s) && !s.startsWith('PROJECTFREEZE_'))) {
     throw new Fault('USAGE', 'Environment references must be variable names.');
   }
   if (!Array.isArray(dependencies) || !dependencies.every(s => typeof s === 'string' && /^p-[a-f0-9]{16}$/.test(s))) {
     throw new Fault('USAGE', 'Dependencies must be registered project IDs.');
   }
-  if (!Array.isArray(containers) || !containers.every(c => c && projectName.test(c.project) && projectName.test(c.service) && typeof c.shared === 'boolean')) {
+  if (!Array.isArray(containers) || containers.length > 24 || !containers.every(c => c && typeof c.project === 'string' && typeof c.service === 'string' &&
+      projectName.test(c.project) && projectName.test(c.service) && typeof c.shared === 'boolean') ||
+      new Set(containers.map(c => `${c.project}/${c.service}`)).size !== containers.length) {
     throw new Fault('USAGE', 'Containers require a Compose project, service, and explicit shared policy.');
   }
+  if (!validSystemd(systemd) || (!linux && systemd.length)) throw new Fault('USAGE', 'Configure exact Linux user systemd unit names and explicit shared policies.');
   if (!Number.isInteger(timeout) || timeout < 100 || timeout > 120000 || !['never', 'on-failure'].includes(restart)) {
     throw new Fault('USAGE', 'Choose a shutdown timeout from 100 to 120000 ms and restart never or on-failure.');
   }
@@ -35,7 +39,7 @@ export async function recipe(input) {
   if (cgroup !== undefined && (!linux || typeof cgroup !== 'string' || !isAbsolute(cgroup))) {
     throw new Fault('USAGE', 'A cgroup requires an absolute, delegated cgroup v2 directory on Linux.');
   }
-  return { argv: input.argv, cwd, env: [...new Set(env)], dependencies: [...new Set(dependencies)], timeout, restart, ready, stop, cgroup, containers };
+  return { argv: input.argv, cwd, env: [...new Set(env)], dependencies: [...new Set(dependencies)], timeout, restart, ready, stop, cgroup, containers, systemd };
 }
 
 export function launchEnv(recipe, available) {
