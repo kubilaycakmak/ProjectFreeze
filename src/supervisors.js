@@ -64,7 +64,9 @@ async function launchdProbe(item, project) {
 
 async function windowsProbe(item, action = 'probe', fingerprint = '-') {
   try {
-    return JSON.parse(await command(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', script, item.kind, item.name, action, fingerprint]));
+    const env = { ...process.env };
+    for (const name of Object.keys(env)) if (name.toUpperCase() === 'PSMODULEPATH') delete env[name];
+    return JSON.parse(await command(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', script, item.kind, item.name, action, fingerprint], { env }));
   } catch (error) {
     if (error.details?.exit === 7) throw new Fault('PARTIAL', `The Windows supervisor did not complete ${action}. Inspect the exact configured service or task.`);
     throw error;

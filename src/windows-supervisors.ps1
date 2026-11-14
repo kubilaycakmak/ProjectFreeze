@@ -1,7 +1,6 @@
 param([string]$Kind, [string]$Name, [string]$Action, [string]$Expected = '-')
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
-Add-Type -AssemblyName System.ServiceProcess
 $user = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 function Get-Sid([string]$Account) {
     if ($Account -match '^S-1-[0-9-]+$') { return $Account }
@@ -44,6 +43,7 @@ try {
         @{ path=$task.Path; fingerprint=$fingerprint; executable=$exec.Path; cwd=$exec.WorkingDirectory;
             enabled=[bool]$task.Enabled; active=($task.GetInstances(0).Count -ne 0 -or $task.State -eq 2) } | ConvertTo-Json -Compress
     } elseif ($Kind -eq 'scm') {
+        Add-Type -AssemblyName System.ServiceProcess
         if ($Name -notmatch '^[A-Za-z0-9][A-Za-z0-9_.-]{0,100}$') { exit 2 }
         $service = Get-CimInstance Win32_Service -Filter "Name='$Name'"
         if (!$service) { exit 3 }

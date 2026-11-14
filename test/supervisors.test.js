@@ -4,6 +4,7 @@ import { copyFile, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { scan } from '../src/platform.js';
 import { observeSupervisors, supervisorAction, supervisorTargets } from '../src/supervisors.js';
@@ -52,6 +53,11 @@ test('real Windows Task Scheduler and SCM controls preserve reviewed ownership',
   const source = join(cwd, 'fixture.cs');
   const ps = join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const run = (verb) => exec(ps, ['-NoProfile', '-NonInteractive', '-File', script, verb, name, cwd], { windowsHide: true });
+  const diagnose = async (kind, name) => {
+    const adapter = fileURLToPath(new URL('../src/windows-supervisors.ps1', import.meta.url));
+    const result = await exec(ps, ['-NoProfile', '-NonInteractive', '-File', adapter, kind, name, 'probe'], { windowsHide: true }).catch(error => error);
+    if (result.stderr) console.error(result.stderr);
+  };
   const project = { id: 'fixture', cwd, recipe: { timeout: 18000, supervisors: [
     { kind: 'task', name: `\\${name}`, shared: false }, { kind: 'scm', name, shared: false }
   ] } };
@@ -94,7 +100,7 @@ if ($Verb -eq 'create') {
     await run('create');
     for (const policy of project.recipe.supervisors) {
       try { await supervisorTargets({ ...project, supervisorPins: project.supervisorPins ??= {}, recipe: { ...project.recipe, supervisors: [policy] } }, [project], true); }
-      catch (error) { error.message = `${policy.kind} enrollment: ${error.message}`; throw error; }
+      catch (error) { await diagnose(policy.kind, policy.name); error.message = `${policy.kind} enrollment: ${error.message}`; throw error; }
     }
     const act = async (verb, kind) => supervisorAction(verb, (await targets()).find(t => t.kind === kind), project);
     await act('disable', 'task');
