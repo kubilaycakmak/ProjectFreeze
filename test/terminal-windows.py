@@ -68,8 +68,7 @@ def main():
 
         try:
             project = cli('run', '--recipe', str(recipe))['projects'][0]
-            terminal_cli = os.environ.get('PF_TERMINAL_CLI')
-            command = [os.environ.get('ComSpec', 'cmd.exe'), '/d', '/c', terminal_cli, 'menu'] if terminal_cli else [NODE, CLI, 'menu']
+            command = [NODE, CLI, 'menu']
             term = PtyProcess.spawn(command, cwd=str(cwd), env=env, dimensions=(26, 100), backend=Backend.ConPTY)
 
             def read_terminal():
@@ -89,7 +88,7 @@ def main():
             send('\x1b[Z', '[Projects]')
             send('/', 'Search projects')
             term.write(cwd.name)
-            send('\r', cwd.name)
+            send('\r', f'running {port}')
             term.setwinsize(26, 100)
             send('\r', f'TCP listeners: 127.0.0.1:{port}')
             before = cli('inspect', project)

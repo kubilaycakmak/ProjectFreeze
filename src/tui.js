@@ -151,12 +151,14 @@ export async function interactive() {
     const pids = new Set(rows.map(row => row.pid));
     rows.filter(row => !pids.has(row.parent)).forEach(row => branch(row, 0));
     rows.forEach(row => branch(row, 0));
+    const actionGuide = Object.entries(shortcuts).filter(([, action]) => available(project, action))
+      .map(([key, action]) => `${key} ${mutations[action][0]}`);
+    if (project.candidates?.length) actionGuide.unshift('a Review ownership');
     return [`${project.name}  [${project.state}]`, project.cwd, '',
       `TCP listeners: ${project.ports.map(endpoint).join(', ') || 'none'}`,
       `${project.processCount} processes   CPU ${project.cpuPercent?.toFixed(1) ?? '—'}%   RSS ${project.rssSum === undefined ? '—' : `${(project.rssSum / 2 ** 20).toFixed(1)} MiB`}`,
       `Restart recipe: ${project.restart?.configured ? 'saved' : 'unavailable'}   Candidates: ${project.candidates?.length ?? 0}`, '',
-      ...branches, '', ...Object.entries(shortcuts).filter(([, action]) => available(project, action)).map(([key, action]) => `[${key}] ${mutations[action][0]}`),
-      ...(project.candidates?.length ? ['[a] Review ownership'] : []), '[Esc] Back'];
+      actionGuide.join('   '), '', ...branches];
   }
 
   function panelLines(budget) {
@@ -192,8 +194,8 @@ export async function interactive() {
     const body = dialog || detail ? panelLines(budget) : listLines(span, budget);
     const heading = [{ text: ' ProjectFreeze ', tone: '1;36' }, { text: tabs, tone: '1' }];
     const result = operation ? `${operation.action}  ${operation.status ?? 'starting'}  ${operation.outcomes?.length ?? 0} result(s)  ${operation.pending ?? ''}` : status;
-    const controls = dialog ? 'Esc Cancel   ? Help' : detail ? '↑↓ Scroll   z Sleep   w Wake   Esc Back   q Quit' :
-      'Tab View   ↑↓ Move   Enter Inspect   / Search   l Launch   ? Help   q Quit';
+    const controls = operation ? 'x Cancel operation   q Detach' : dialog ? 'Esc Cancel   q Quit' : detail ?
+      '↑↓ Scroll   Esc Back   Tab View   ? Help   q Quit' : 'Tab View   ↑↓ Move   Enter Inspect   / Search   l Launch   ? Help   q Quit';
     const frame = [...heading, ...body.slice(0, budget)];
     while (frame.length < rows - 2) frame.push({ text: '' });
     frame.push({ text: result, tone: operation ? '33' : '2' }, { text: controls, tone: '36' });
@@ -212,13 +214,13 @@ export async function interactive() {
     const screen = tab;
     const inspected = detail?.project?.id;
     try {
-      projects = await request('list');
-      if (screen === 1) listeners = await request('listeners');
-      if (screen === 2) history = await request('history');
       if (inspected && detail?.project?.id === inspected) {
         const current = await request('inspect', { id: inspected });
         if (detail?.project?.id === inspected) detail.project = current;
-      }
+        projects = projects.map(row => row.id === inspected ? current : row);
+      } else if (screen === 1) listeners = await request('listeners');
+      else if (screen === 2) history = await request('history');
+      else projects = await request('list');
       refreshed = true;
     } catch (error) { status = problem(error).message; }
     finally {
@@ -325,7 +327,7 @@ export async function interactive() {
     if (name === 'q') { quit(); return; }
     if (name === 'escape') {
       if (dialog) dialog = undefined;
-      else if (detail) detail = undefined;
+      else if (detail) { detail = undefined; void refresh(); }
       else if (search) search = '';
       else if (tab !== 0) switchTab(0);
       return;
