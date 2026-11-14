@@ -16,6 +16,7 @@ const options = { cwd: base, env, stdio: 'pipe', timeout: 30000, windowsHide: tr
 const npmArgs = args => windows ? ['/d', '/c', 'npm', ...args] : args;
 const install = ['install', '--ignore-scripts', '--offline', '--no-audit', '--no-fund'];
 const npmRun = args => execFileSync(npm, npmArgs(args), options);
+const npmCli = windows ? join(resolve(process.execPath, '..'), 'node_modules', 'npm', 'bin', 'npm-cli.js') : undefined;
 const cli = join(base, 'node_modules', '@kubilaycakmak', 'projectfreeze', 'bin', 'projectfreeze.js');
 const run = args => JSON.parse(execFileSync(process.execPath, [cli, '--json', ...args], options).toString());
 const finish = join(base, 'finish');
@@ -39,7 +40,8 @@ try {
   const interruptedDir = mkdtempSync(join(base, 'interrupted '));
   try {
     copyFileSync(path, join(interruptedDir, 'candidate.tgz'));
-    const npmChild = spawn(npm, npmArgs([...install, './candidate.tgz']), { ...options, cwd: interruptedDir, stdio: 'ignore' });
+    const npmChild = spawn(windows ? process.execPath : npm, [...(windows ? [npmCli] : []), ...install, './candidate.tgz'],
+      { ...options, cwd: interruptedDir, stdio: 'ignore' });
     const done = new Promise((resolve, reject) => { npmChild.once('exit', (code, signal) => resolve({ code, signal })); npmChild.once('error', reject); });
     assert.equal(npmChild.kill('SIGTERM'), true);
     assert.notEqual((await done).code, 0);

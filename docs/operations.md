@@ -20,7 +20,7 @@ Candidates combine process metadata, manifest paths, executable metadata, ancest
 
 CPU is sampled as percent of one logical core. Resident-memory figures sum observed process RSS and can count shared pages more than once. A project dependency is listed by reference. Compose services referenced by multiple projects are treated as shared. Listening port results describe the authorized TCP scan. An absent result can also indicate an out-of-scope listener.
 
-One canonical directory currently maps to one durable project. Nearby monorepo manifests can produce separate discovery groups. Detached or reparented processes can remain outside verified containment and may require individual review. The current process scan provides no reliable historical command reconstruction. The systemd adapter supports explicit Linux user services and timers. macOS launchd, Windows Service Control Manager and Task Scheduler, cron, and other external supervisors still require separate lifecycle management.
+One canonical directory currently maps to one durable project. Nearby monorepo manifests can produce separate discovery groups. Detached or reparented processes remain candidates when an executable, script path, or observable working directory still ties them to a project. They require individual review when they escape native containment. The current process scan provides no reliable historical command reconstruction. The systemd and native supervisor adapters coordinate only registered resources with verified definitions and permissions.
 
 ## Recovering a workload
 
@@ -29,7 +29,7 @@ One canonical directory currently maps to one durable project. Nearby monorepo m
 3. If a freeze completed partially, `projectfreeze resume PROJECT` releases recorded ProjectFreeze suspensions. A process that was already suspended is left for its original owner. After an interruption during an unrecorded effect, inspect the pending step before taking manual action.
 4. If shutdown was partial, inspect which resources remain and retry the reviewed action. Verify that any stopped dependency is safe to restart before wake. A successful wake checks TCP readiness when configured. Application-level recovery may also require credential, connection, timer, and pending I/O checks.
 
-Daemon restart preserves workloads and state. A changed boot identity invalidates old process identities. A package upgrade should stop the daemon, install the verified package, and start it against the same state directory. Keep recoverable metadata and the old package until reconciliation succeeds.
+Daemon restart preserves workloads and state. Native launch supervisors persist exit receipts independently of the daemon. The `on-failure` policy consumes a recorded nonzero exit on the same boot and stops after three restart attempts. A missing receipt or a changed boot identity requires review. A package upgrade should stop the daemon, install the verified package, and start it against the same state directory. Keep recoverable metadata and the old package until reconciliation succeeds. Windows launches use a hash-addressed helper copy inside private state so an active launch supervisor cannot lock the installed npm package during removal.
 
 ## Checkpoints
 

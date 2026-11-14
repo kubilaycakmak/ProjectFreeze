@@ -75,7 +75,10 @@ export class Engine {
     if (action === 'list') return combined;
     const project = combined.find(p => p.id === input.id);
     if (!project) throw new Fault('NOT_FOUND', 'Unknown project ID.');
-    return { ...project, candidates: observed.find(candidate => candidate.id === input.id)?.processes ?? [],
+    const registered = projects.find(row => row.id === input.id);
+    const supervisors = registered ? await observeSupervisors(registered, projects, rows).then(targets => targets.map(({ key, kind, name, state, pid, enabled, active, shared }) =>
+      ({ key, kind, name, state, pid, enabled, active, shared })), error => project.supervisors.map(target => ({ ...target, error: problem(error) }))) : [];
+    return { ...project, supervisors, candidates: observed.find(candidate => candidate.id === input.id)?.processes ?? [],
       operations: this.store.history().filter(op => op.projects.includes(input.id)).slice(0, 12) };
   }
 
@@ -123,7 +126,7 @@ export class Engine {
           this.check(job);
           const project = this.store.project(id);
           try {
-            if (project.uncertainEffect && !['freeze', 'resume'].includes(op.action)) {
+            if (project.uncertainEffect) {
               throw new Fault('PARTIAL', 'Reconcile the interrupted resource effect before changing project state.');
             }
             if (op.action === 'freeze') await this.freeze(job, project);
@@ -187,7 +190,9 @@ export class Engine {
     const configuration = await recipe(input.recipe);
     const id = projectId(configuration.cwd);
     const project = this.store.projects().find(p => p.id === id) ?? newProject(id, configuration.cwd);
-    if (!['registered', 'exited', 'sleeping'].includes(project.state)) throw new Fault('BUSY', 'This project already owns a workload. Inspect it before launching another.');
+    if (project.uncertainEffect || !['registered', 'exited', 'sleeping'].includes(project.state)) {
+      throw new Fault('BUSY', 'This project already owns a workload or has an interrupted effect. Inspect and reconcile before launching another.');
+    }
     if (visible(await scan(false), project).length) throw new Fault('BUSY', 'Verified processes are already running for this project.');
     const all = this.store.projects();
     for (const id of configuration.dependencies) {
@@ -217,7 +222,7 @@ export class Engine {
     const staged = await stageLaunch(config.argv, project.cwd, env, project.job, project.cgroup, join(this.state, `exit-${project.launchReceipt}`));
     try {
       project.root = staged.root;
-      project.members = [{ ...staged.root, source: 'launched' }];
+      project.members = [...project.members.filter(member => member.source === 'adopted' && member.suspended), { ...staged.root, source: 'launched' }];
       this.pending(job, project, 'release verified staged workload', { kind: 'launch' });
       this.check(job);
       staged.release();
@@ -551,6 +556,11 @@ export class Engine {
     await supervisorAction(action, target, project);
     const previous = project[field] ?? [];
     project[field] = remove ? previous.filter(key => key !== target.key) : [...new Set([...previous, target.key])];
+    if (action === 'pause') {
+      project.pausedSupervisorIdentities ??= {};
+      project.pausedSupervisorIdentities[target.key] = target.process ? identity(target.process) : { pid: target.pid };
+    }
+    if (action === 'resume' && project.pausedSupervisorIdentities) delete project.pausedSupervisorIdentities[target.key];
     this.record(job, project, target.name, action);
   }
 
@@ -563,8 +573,14 @@ export class Engine {
     for (const key of [...(project[field] ?? [])]) {
       const target = targets.find(t => t.key === key && !t.shared);
       if (!target) throw new Fault('DENIED', 'The previously changed resource is outside current exclusive ownership.');
+      const pausedIdentity = project.pausedSupervisorIdentities?.[key];
+      if (action === 'resume' && pausedIdentity && (target.pid !== pausedIdentity.pid ||
+          (pausedIdentity.birth && !matches(target.process, pausedIdentity)))) {
+        throw new Fault('DENIED', 'The previously paused supervisor process was replaced.');
+      }
       if (action === 'enable' ? target.enabled : target.state === 'Running') {
         project[field] = project[field].filter(value => value !== key);
+        if (action === 'resume' && project.pausedSupervisorIdentities) delete project.pausedSupervisorIdentities[key];
         this.record(job, project, target.name, 'already-restored');
       } else await this.changeSupervisor(job, project, action, target, field, true);
     }
@@ -677,14 +693,18 @@ export class Engine {
         if (!row || !member || !suspended(row)) {
           if (member) delete member.suspended;
           delete project.uncertainEffect;
-        } else if (effect.verb === 'freeze') {
-          this.record(job, project, String(row.pid), 'unconfirmed-suspension');
-        }
+        } else if (effect.verb === 'freeze') this.record(job, project, String(row.pid), 'unconfirmed-suspension');
+        else if (member.suspended) delete project.uncertainEffect;
       }
       if (effect?.kind === 'supervisor') {
         const target = external.find(item => item.key === effect.key && !item.shared);
         if (target && (effect.verb === 'enable' ? target.enabled : effect.verb === 'resume' ? target.state === 'Running' && target.pid === effect.pid : false)) {
           project[effect.field] = (project[effect.field] ?? []).filter(value => value !== effect.key);
+          delete project.uncertainEffect;
+        }
+        if (target && (effect.verb === 'disable' ? target.enabled && !target.active :
+          effect.verb === 'pause' || effect.verb === 'stop' ? target.state === 'Running' && target.pid === effect.pid :
+            effect.verb === 'start' ? target.state === 'Stopped' : effect.verb === 'resume' && target.state === 'Paused' && target.pid === effect.pid)) {
           delete project.uncertainEffect;
         }
       }

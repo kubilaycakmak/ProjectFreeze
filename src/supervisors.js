@@ -98,22 +98,26 @@ export async function supervisorTargets(project, all, enroll = false) {
   return result;
 }
 
-async function launchdProcess(target, rows) {
+async function launchdProcess(target, rows, transition = false) {
   if (!target.pid) return undefined;
   const process = rows.find(row => row.pid === target.pid);
   const executable = await realpath(target.executable).catch(() => '');
-  if (!process?.image || await realpath(process.image).catch(() => '') !== executable || rows.some(row => row.parent === target.pid)) {
+  const observed = process?.image ? await realpath(process.image).catch(() => '') : '';
+  if (transition && !observed) return undefined;
+  if (!observed || observed !== executable || rows.some(row => row.parent === target.pid)) {
     throw new Fault('UNSUPPORTED', 'LaunchAgent control requires one observable process with the reviewed executable and no live children.');
   }
   return process;
 }
 
-export async function observeSupervisors(project, all, rows) {
+export async function observeSupervisors(project, all, rows, transition = false) {
   const targets = await supervisorTargets(project, all);
   for (const target of targets.filter(t => !t.shared)) {
     if (target.kind === 'launchd') {
-      target.process = await launchdProcess(target, rows);
-      target.state = target.process?.state === 'T' ? 'Paused' : target.process ? 'Running' : 'Stopped';
+      target.process = await launchdProcess(target, rows, transition);
+      target.state = target.process?.state === 'T' ? 'Paused' : target.process ? 'Running' : target.pid ? 'Pending' : 'Stopped';
+    } else if (target.kind === 'scm' && target.pid) {
+      target.process = rows.find(row => row.pid === target.pid);
     }
   }
   return targets;
@@ -123,6 +127,9 @@ export async function supervisorAction(action, target, project) {
   if (target.shared) throw new Fault('DENIED', 'Shared supervisors are observational.');
   const before = await probe(target, project);
   if (before.fingerprint !== target.fingerprint) throw new Fault('DENIED', 'Supervisor scope changed before control.');
+  if (['pause', 'resume', 'stop'].includes(action) && (!target.pid || before.pid !== target.pid)) {
+    throw new Fault('DENIED', 'The supervisor process changed before control.');
+  }
   const timeout = project.recipe?.timeout ?? 10000;
   if (target.kind === 'launchd') {
     if (action === 'start') {
@@ -140,7 +147,7 @@ export async function supervisorAction(action, target, project) {
   }
   const deadline = Date.now() + timeout;
   do {
-    const [current] = await observeSupervisors({ ...project, recipe: { ...project.recipe, supervisors: [target] } }, [], await scan(false));
+    const [current] = await observeSupervisors({ ...project, recipe: { ...project.recipe, supervisors: [target] } }, [], await scan(false), true);
     if (action === 'enable' ? current.enabled : action === 'disable' ? !current.enabled && !current.active :
         current.state === ({ pause: 'Paused', resume: 'Running', start: 'Running', stop: 'Stopped' })[action] &&
           (!['pause','resume'].includes(action) || current.pid === before.pid)) return;
