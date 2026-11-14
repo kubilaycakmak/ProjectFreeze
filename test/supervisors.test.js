@@ -81,9 +81,9 @@ if ($Verb -eq 'create') {
   $result = Invoke-CimMethod -InputObject $service -MethodName Change -Arguments @{ StartName='NT AUTHORITY\\LocalService'; StartPassword='' }
   if ($result.ReturnValue -ne 0) { throw "Service account configuration failed: $($result.ReturnValue)" }
   $access = [Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new('S-1-5-19'), 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
-  $acl = Get-Acl -LiteralPath $Root
+  $acl = [IO.Directory]::GetAccessControl($Root)
   $acl.AddAccessRule($access)
-  Set-Acl -LiteralPath $Root -AclObject $acl
+  [IO.Directory]::SetAccessControl($Root,$acl)
 } else {
   Unregister-ScheduledTask -TaskName $Name -Confirm:$false -ErrorAction SilentlyContinue
   & sc.exe continue $Name | Out-Null
