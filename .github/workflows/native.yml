@@ -109,7 +109,7 @@ jobs:
       - run: PF_TEST_DOCKER=1 node --test --test-name-pattern=Compose test/backends.test.js
 
   criu:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
