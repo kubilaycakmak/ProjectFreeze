@@ -50,6 +50,11 @@ try {
         if ($service.ServiceType -ne 'Own Process' -or $service.StartMode -ne 'Manual' -or
             (Get-Sid $service.StartName) -notin @($user,'S-1-5-19') -or $service.PathName -notmatch '^"([^"]+\.exe)"(?:\s|$)|^([^\s"]+\.exe)(?:\s|$)') { exit 4 }
         $binary = if ($Matches[1]) { $Matches[1] } else { $Matches[2] }
+        $registry = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey("SYSTEM\CurrentControlSet\Services\$Name")
+        if (!$registry) { exit 4 }
+        try {
+            if (($registry.GetSubKeyNames() -contains 'TriggerInfo') -or $null -ne $registry.GetValue('FailureActions')) { exit 5 }
+        } finally { $registry.Dispose() }
         $controller = [System.ServiceProcess.ServiceController]::new($Name)
         try {
             if ($controller.DependentServices.Count -or $controller.ServicesDependedOn.Count) { exit 4 }

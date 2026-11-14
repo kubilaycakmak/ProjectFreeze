@@ -74,7 +74,8 @@ $ErrorActionPreference = 'Stop'
 if ($Verb -eq 'create') {
   $owner = [Security.Principal.WindowsIdentity]::GetCurrent().Name
   $action = New-ScheduledTaskAction -Execute (Join-Path $Root 'node.exe') -Argument '--version' -WorkingDirectory $Root
-  Register-ScheduledTask -TaskName $Name -Action $action -User $owner -RunLevel Limited | Out-Null
+  $principal = New-ScheduledTaskPrincipal -UserId $owner -LogonType Interactive -RunLevel Limited
+  Register-ScheduledTask -TaskName $Name -Action $action -Principal $principal | Out-Null
   $binary = '"' + (Join-Path $Root 'fixture.exe') + '"'
   New-Service -Name $Name -BinaryPathName $binary -StartupType Manual | Out-Null
   $service = Get-CimInstance Win32_Service -Filter "Name='$Name'"
@@ -91,7 +92,10 @@ if ($Verb -eq 'create') {
   & sc.exe delete $Name | Out-Null
 }`);
     await run('create');
-    await supervisorTargets(project, [project], true);
+    for (const policy of project.recipe.supervisors) {
+      try { await supervisorTargets({ ...project, supervisorPins: project.supervisorPins ??= {}, recipe: { ...project.recipe, supervisors: [policy] } }, [project], true); }
+      catch (error) { error.message = `${policy.kind} enrollment: ${error.message}`; throw error; }
+    }
     const act = async (verb, kind) => supervisorAction(verb, (await targets()).find(t => t.kind === kind), project);
     await act('disable', 'task');
     assert.equal((await targets())[0].enabled, false);

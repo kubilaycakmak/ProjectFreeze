@@ -58,7 +58,7 @@ Use `supervisors` to associate existing platform resources with a project recipe
 | Platform | Example entry | Verified scope |
 | --- | --- | --- |
 | macOS | `{"kind":"launchd","name":"com.example.worker","plist":"/absolute/project/worker.plist","shared":false}` | A loaded GUI user LaunchAgent with an owner-controlled project plist, matching executable and working directory, one observable process, and no automatic activation. |
-| Windows | `{"kind":"scm","name":"ExampleWorker","shared":false}` | An existing manual-start, own-process service with an executable in the project, no dependencies or dependents, and a current-user or LocalService account. SCM decides which controls the service supports. |
+| Windows | `{"kind":"scm","name":"ExampleWorker","shared":false}` | An existing manual-start, own-process service with an executable in the project, no dependencies, dependents, triggers, or recovery actions, and a current-user or LocalService account. SCM decides which controls the service supports. |
 | Windows | `{"kind":"task","name":"\\ExampleTimer","shared":false}` | An existing low-privilege task for the current user with a single project executable and matching working directory. Running or queued tasks delay freeze and sleep. Only idle activation is disabled and restored. |
 
 Register and authorize platform resources through the operating system before giving ProjectFreeze their definitions. Worker output, arguments, and credentials remain in the owning supervisor. ProjectFreeze pins reviewed definitions and rejects changed fingerprints. PowerShell on Windows executes the installed adapter with the existing execution policy.

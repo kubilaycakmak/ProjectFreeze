@@ -471,8 +471,9 @@ export class Engine {
       const env = launchEnv(project.recipe, process.env);
       const executablePath = await executable(project.recipe.stop[0], project.cwd, env);
       this.check(job);
-      this.pending(job, project, 'run reviewed application shutdown command');
+      this.pending(job, project, 'run reviewed application shutdown command', { kind: 'shutdown' });
       await command(executablePath, project.recipe.stop.slice(1), { cwd: project.cwd, env, timeout: project.recipe.timeout });
+      this.record(job, project, project.id, 'shutdown-command-completed');
     } else if (!windows) {
       for (const row of [...members].reverse().filter(row => !servicePids.has(row.pid))) {
         this.check(job);
@@ -686,6 +687,7 @@ export class Engine {
       const containers = await composeTargets(project, this.store.projects());
       const external = await observeSupervisors(project, this.store.projects(), rows);
       const effect = project.uncertainEffect;
+      if (effect?.kind === 'shutdown' && !live.length) delete project.uncertainEffect;
       if (effect?.kind === 'launch') {
         if (live.length) await this.ready(job, project);
         delete project.uncertainEffect;

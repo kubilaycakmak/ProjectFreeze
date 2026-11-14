@@ -75,6 +75,7 @@ setInterval(() => {
   await until(async () => (await call('inspect', id)).data?.processCount === 0);
   assert.equal((await call('reconcile', id)).ok, true);
   assert.equal(Number(await read('worker.pid')), second);
+  assert.equal((await call('inspect', id)).data.state, 'exited');
 });
 
 test('detached candidate remains observable after its parent exits', { timeout: 45000 }, async t => {
