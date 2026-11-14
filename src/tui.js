@@ -24,7 +24,7 @@ export async function interactive() {
   const colors = !Object.hasOwn(process.env, 'NO_COLOR') && process.env.TERM !== 'dumb';
   const selected = new Set();
   let cursor = 0, scroll = 0, filter = 0, sort = 0, search = '', projects = [];
-  let page = 'list', detail, expanded = false, editing, preview, active, done = false, updating = false, detaching;
+  let page = 'list', detail, listeners = [], listenerScroll = 0, expanded = false, editing, preview, active, done = false, updating = false, detaching;
   let message = 'Scanning authorized processes…';
   const visible = () => projects.filter(project => (filter === 0 || project.state === states[filter]) &&
     `${project.name} ${project.cwd} ${project.state}`.toLowerCase().includes(search.toLowerCase())).sort((a, b) =>
@@ -39,11 +39,16 @@ export async function interactive() {
     const lines = ['ProjectFreeze', ''];
     if (page === 'help') {
       lines.push('↑/↓ Move    Space Select    Enter Inspect    → Expand    ← Collapse',
-        '/ Search    s Sort    t Filter    r Refresh    ? Help    q Close',
+        '/ Search    s Sort    t Filter    p TCP ports    r Refresh    ? Help    q Close',
         'a Adopt    l Launch recipe    f Freeze    u Resume    z Sleep    w Wake',
         'c Checkpoint    o Restore    e Reconcile    h History    x Cancel operation',
         'Close or Ctrl-C to detach. Reconnect with projectfreeze or operation ID.',
         'Cancellation takes effect at a resource boundary. Inspect outcomes after cancellation.');
+    } else if (page === 'listeners') {
+      const limit = Math.max(1, height - 7);
+      listenerScroll = Math.min(listenerScroll, Math.max(0, listeners.length - limit));
+      lines.push(`TCP listeners (${listeners.length})   ↑/↓ Scroll`, '', ...listeners.slice(listenerScroll, listenerScroll + limit).map(port =>
+        `${port.address.includes(':') ? `[${port.address}]` : port.address}:${port.port}  PID ${port.pid}  ${port.name ?? port.image ?? 'unassigned'}  (${port.scope})`));
     } else if (page === 'history') {
       lines.push('Operation history', '', ...((detail?.operations ?? []).flatMap(op => [
         `${op.status} ${op.action} ${op.id}`, ...op.outcomes.map(outcome => `  ${outcome.status} ${outcome.target} ${outcome.message ?? ''}`)])));
@@ -74,7 +79,8 @@ export async function interactive() {
       if (cursor >= scroll + count) scroll = cursor - count + 1;
       lines.push(`Search ${search || 'all'}   Filter ${states[filter]}   Sort ${sorts[sort]}   Selected ${selected.size}`, '');
       for (const [index, row] of rows.slice(scroll, scroll + count).entries()) {
-        lines.push(`${index + scroll === cursor ? '>' : ' '} ${selected.has(row.id) ? '[x]' : '[ ]'} ${row.name}  ${row.state}  ${row.processCount} proc  ${row.cwd}`);
+        const ports = [...new Set(row.ports.map(port => port.port))].join(',') || 'none';
+        lines.push(`${index + scroll === cursor ? '>' : ' '} ${selected.has(row.id) ? '[x]' : '[ ]'} ${row.name}  ${row.state}  TCP ${ports}  ${row.processCount} proc`);
       }
       if (!rows.length) lines.push('No projects in the current view.');
     }
@@ -84,7 +90,7 @@ export async function interactive() {
     if (editing) lines.splice(2, Infinity, `${editing.label} ${editing.text}`, '', 'Enter Apply    Esc Cancel');
     const banner = active ? `Operation ${active.id} ${active.status ?? ''} ${active.pending ?? ''}` : message;
     const body = lines.slice(0, height - 3).map(value => Array.from(clean(value)).slice(0, width).join(''));
-    const tail = [banner, '? Help   Esc Back   q Close'].map(value => Array.from(clean(value)).slice(0, width).join(''));
+    const tail = [banner, 'Enter Inspect   p Ports   z Sleep   w Wake   ? Help   q Close'].map(value => Array.from(clean(value)).slice(0, width).join(''));
     output.write(`${esc}H${esc}2J${colors ? `${esc}1m${body.shift()}${esc}0m\n` : ''}${body.join('\n')}\n\n${tail.join('\n')}`);
   }
 
@@ -92,7 +98,8 @@ export async function interactive() {
     if (updating || done) return;
     updating = true;
     try {
-      projects = await request('list');
+      if (page === 'listeners') listeners = await request('listeners');
+      else projects = await request('list');
       if (detail && page === 'detail') detail = await request('inspect', { id: detail.id });
     } catch (error) { message = problem(error).message; }
     finally { updating = false; draw(); }
@@ -181,6 +188,12 @@ export async function interactive() {
     if (str === '?') { page = 'help'; return; }
     if (name === 'x' && active) { await request('cancel', { id: active.id }); return; }
     if (name === 'r') { await refresh(); return; }
+    if (name === 'p') { page = 'listeners'; listenerScroll = 0; await refresh(); return; }
+    if (page === 'listeners') {
+      if (name === 'up') listenerScroll = Math.max(0, listenerScroll - 1);
+      if (name === 'down') listenerScroll++;
+      return;
+    }
     if (str === '/') { editing = { label: 'Search', text: search, apply: value => { search = value; cursor = 0; page = 'list'; detail = undefined; } }; return; }
     if (name === 's') { sort = (sort + 1) % sorts.length; return; }
     if (name === 't') { filter = (filter + 1) % states.length; return; }
@@ -209,5 +222,6 @@ export async function interactive() {
   input.on('keypress', keypress);
   output.on('resize', draw);
   const timer = setInterval(() => void refresh(), 2500);
+  draw();
   await refresh();
 }

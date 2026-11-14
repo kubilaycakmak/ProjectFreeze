@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
@@ -59,6 +60,42 @@ static class Native {
     [DllImport("ntdll")] static extern int NtQuerySystemInformation(int info, [Out] byte[] buffer, int length, out int written);
     [DllImport("shell32", CharSet = CharSet.Unicode)] static extern IntPtr CommandLineToArgvW(string line, out int count);
     [DllImport("kernel32")] static extern IntPtr LocalFree(IntPtr pointer);
+    [DllImport("iphlpapi")] static extern uint GetExtendedTcpTable(IntPtr table, ref int size, bool sorted, uint family, int kind, uint reserved);
+
+    static int Listeners() {
+        const int ownerPidListener = 3;
+        const uint tooSmall = 122;
+        foreach (uint family in new uint[] { 2, 23 }) {
+            bool ipv6 = family == 23;
+            int size = 0;
+            if (GetExtendedTcpTable(IntPtr.Zero, ref size, false, family, ownerPidListener, 0) != tooSmall) return 7;
+            bool read = false;
+            for (int attempt = 0; attempt < 3 && size > 0 && size <= 16777216; attempt++) {
+                int capacity = size;
+                IntPtr table = Marshal.AllocHGlobal(capacity);
+                try {
+                    uint result = GetExtendedTcpTable(table, ref size, false, family, ownerPidListener, 0);
+                    if (result == tooSmall) continue;
+                    if (result != 0) return 7;
+                    int length = ipv6 ? 56 : 24;
+                    int count = Marshal.ReadInt32(table);
+                    if (count < 0 || count > (capacity - 4) / length) return 7;
+                    for (int i = 0; i < count; i++) {
+                        var row = IntPtr.Add(table, 4 + i * length);
+                        var address = new byte[ipv6 ? 16 : 4];
+                        Marshal.Copy(IntPtr.Add(row, ipv6 ? 0 : 4), address, 0, address.Length);
+                        var ip = ipv6 ? new IPAddress(address, (uint)IPAddress.NetworkToHostOrder(Marshal.ReadInt32(row, 16))) : new IPAddress(address);
+                        int port = (ushort)IPAddress.NetworkToHostOrder(Marshal.ReadInt16(row, ipv6 ? 20 : 8));
+                        Console.WriteLine("{0}\t{1}\t{2}", Marshal.ReadInt32(row, length - 4), ip, port);
+                    }
+                    read = true;
+                    break;
+                } finally { Marshal.FreeHGlobal(table); }
+            }
+            if (!read) return 7;
+        }
+        return 0;
+    }
 
     static string ScriptHint(IntPtr handle) {
         int size;
@@ -257,6 +294,7 @@ static class Native {
         try {
             if (args.Length == 1 && args[0] == "scan") return Scan(false, IntPtr.Zero);
             if (args.Length == 1 && args[0] == "discover") return Scan(true, IntPtr.Zero);
+            if (args.Length == 1 && args[0] == "listeners") return Listeners();
             if (args.Length == 2 && args[0] == "job-scan") return JobScan(args[1]);
             if (args.Length == 1 && args[0] == "boot") return Boot();
             if (args.Length == 2 && args[0] == "secure-directory") return SecureDirectory(args[1]);

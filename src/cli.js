@@ -7,7 +7,8 @@ import { daemon, request, waitOperation } from './ipc.js';
 const usage = `ProjectFreeze
 
   projectfreeze                         Open the interactive terminal
-  projectfreeze list | discover | history
+  projectfreeze menu                    Open the numbered, Enter-driven menu
+  projectfreeze list | discover | listeners | history
   projectfreeze inspect PROJECT
   projectfreeze adopt --cwd DIR --member PID@BIRTH@BOOT --confirm [--recipe FILE]
   projectfreeze run --cwd DIR -- EXECUTABLE [ARG ...]
@@ -26,7 +27,7 @@ Press Ctrl-C to disconnect from a running operation. Use cancel ID to request ca
 `;
 
 const mutations = new Set(['adopt', 'run', 'freeze', 'resume', 'sleep', 'wake', 'checkpoint', 'restore', 'reconcile']);
-const readActions = new Set(['list', 'discover', 'inspect', 'history', 'operation', 'cancel']);
+const readActions = new Set(['list', 'discover', 'inspect', 'listeners', 'history', 'operation', 'cancel']);
 const opts = {
   json: { type: 'boolean' }, detach: { type: 'boolean' }, force: { type: 'boolean' }, confirm: { type: 'boolean' },
   cwd: { type: 'string' }, recipe: { type: 'string' }, member: { type: 'string', multiple: true },
@@ -41,7 +42,7 @@ function target(raw) {
 
 function format(data) {
   if (Array.isArray(data) && data.every(row => row.cwd)) {
-    return data.length ? data.map(row => `${row.id}\t${row.state}\t${row.processCount} process(es)\t${row.cwd}`).join('\n') : 'No projects in authorized scope.';
+    return data.length ? data.map(row => `${row.id}\t${row.state}\t${row.processCount} process(es)\tTCP ${[...new Set(row.ports.map(p => p.port))].join(', ') || 'none'}\t${row.cwd}`).join('\n') : 'No projects in authorized scope.';
   }
   if (data?.outcomes) return [`${data.action} ${data.id} ${data.status}`, ...data.outcomes.map(row =>
     `  ${row.target}  ${row.status}${row.message ? `  ${row.message}` : ''}`)].join('\n');
@@ -60,7 +61,12 @@ export async function main(args) {
     if (values.help || action === 'help') { process.stdout.write(usage); return; }
     if (action === 'mcp') { await (await import('./mcp.js')).serve(); return; }
     if (action === '_daemon' || (action === 'daemon' && ids[0] === 'foreground')) { await daemon(); return; }
-    if (!action && !json && process.stdin.isTTY && process.stdout.isTTY) { await (await import('./tui.js')).interactive(); return; }
+    if (action === 'menu' || (!action && !json && process.stdin.isTTY && process.stdout.isTTY)) {
+      if (json || ids.length) throw new Fault('USAGE', 'Run projectfreeze menu without additional arguments.');
+      if (action === 'menu' || process.platform === 'win32' || process.env.TERM === 'dumb') await (await import('./line-menu.js')).lineMenu();
+      else await (await import('./tui.js')).interactive();
+      return;
+    }
     action ??= 'list';
     let input = {};
     let auto = true;
@@ -96,7 +102,9 @@ export async function main(args) {
     const status = result?.status;
     const fault = result?.outcomes?.find(outcome => outcome.status === 'failed');
     const code = status === 'partial' || status === 'interrupted' ? 'PARTIAL' : status === 'cancelled' ? 'CANCELLED' : status === 'failed' ? fault?.code ?? 'INTERNAL' : null;
-    process.stdout.write(`${json ? JSON.stringify({ schemaVersion: 1, ok: !code, data: result }) : format(result)}\n`);
+    const display = () => action === 'listeners' ? (result.length ? result.map(row =>
+      `${row.address.includes(':') ? `[${row.address}]` : row.address}:${row.port}\tPID ${row.pid}\t${row.name ?? row.image ?? 'unassigned'}\t${row.scope}`).join('\n') : 'No TCP listeners observed.') : format(result);
+    process.stdout.write(`${json ? JSON.stringify({ schemaVersion: 1, ok: !code, data: result }) : display()}\n`);
     if (code) process.exitCode = exitCode(code);
   } catch (error) {
     const detail = error?.code?.startsWith?.('ERR_PARSE_ARGS') ? { code: 'USAGE', message: 'Invalid command-line arguments. Run projectfreeze --help.' } : problem(error);

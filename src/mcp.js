@@ -23,6 +23,7 @@ const tool = (name, description, properties = {}, required = [], mutation = fals
 const tools = [
   tool('list', 'List projects and live resources in local authorized scope.'),
   tool('discover', 'Find candidate identities and evidence for explicit adoption.'),
+  tool('listeners', 'List TCP listeners of locally observable processes, including unassigned listeners.'),
   tool('inspect', 'Inspect resource identities, candidates, and recent operations.', { id }, ['id']),
   tool('history', 'Read recent durable operations.'),
   tool('operation', 'Read one operation and its per-resource outcomes.', { id }, ['id']),
@@ -71,7 +72,7 @@ export async function serve() {
       if (!params || typeof params.protocolVersion !== 'string' || negotiated) { rpcError(id, -32602, 'Invalid initialize parameters.'); return; }
       negotiated = true;
       result({ protocolVersion: versions.has(params.protocolVersion) ? params.protocolVersion : '2025-11-25',
-        serverInfo: { name: 'projectfreeze', version: '0.1.0-dev.1' }, capabilities: { tools: {} },
+        serverInfo: { name: 'projectfreeze', version: '0.1.0-dev.2' }, capabilities: { tools: {} },
         instructions: 'Use discover and inspect before adopting or controlling a project. Obtain specific approval for ambiguous adoption or force termination.' });
       return;
     }
