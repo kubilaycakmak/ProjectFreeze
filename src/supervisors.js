@@ -66,7 +66,11 @@ async function windowsProbe(item, action = 'probe', fingerprint = '-') {
   try {
     const env = { ...process.env };
     for (const name of Object.keys(env)) if (name.toUpperCase() === 'PSMODULEPATH') delete env[name];
-    return JSON.parse(await command(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', script, item.kind, item.name, action, fingerprint], { env }));
+    Object.assign(env, { PF_SUPERVISOR_SCRIPT: script, PF_SUPERVISOR_KIND: item.kind, PF_SUPERVISOR_NAME: item.name,
+      PF_SUPERVISOR_ACTION: action, PF_SUPERVISOR_FINGERPRINT: fingerprint });
+    const invoke = '& $env:PF_SUPERVISOR_SCRIPT -Kind $env:PF_SUPERVISOR_KIND -Name $env:PF_SUPERVISOR_NAME -Action $env:PF_SUPERVISOR_ACTION -Expected $env:PF_SUPERVISOR_FINGERPRINT; exit $LASTEXITCODE';
+    const encoded = Buffer.from(invoke, 'utf16le').toString('base64');
+    return JSON.parse(await command(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], { env }));
   } catch (error) {
     if (error.details?.exit === 7) throw new Fault('PARTIAL', `The Windows supervisor did not complete ${action}. Inspect the exact configured service or task.`);
     throw error;

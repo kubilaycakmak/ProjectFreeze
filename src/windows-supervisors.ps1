@@ -74,6 +74,9 @@ try {
         } finally { $controller.Dispose() }
     } else { exit 2 }
 } catch {
+    if ($env:PF_SUPERVISOR_TEST_DIAGNOSTICS -eq '1') {
+        [Console]::Error.WriteLine(('{0}: HRESULT {1}, line {2}' -f $_.FullyQualifiedErrorId,$_.Exception.HResult,$_.InvocationInfo.ScriptLineNumber))
+    }
     if ($_.Exception.HResult -in @(-2147024891,-2147217405)) { exit 4 }
     if ($_.Exception.HResult -in @(-2147024894,-2147217406)) { exit 3 }
     exit 7

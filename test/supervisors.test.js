@@ -55,7 +55,10 @@ test('real Windows Task Scheduler and SCM controls preserve reviewed ownership',
   const run = (verb) => exec(ps, ['-NoProfile', '-NonInteractive', '-File', script, verb, name, cwd], { windowsHide: true });
   const diagnose = async (kind, name) => {
     const adapter = fileURLToPath(new URL('../src/windows-supervisors.ps1', import.meta.url));
-    const result = await exec(ps, ['-NoProfile', '-NonInteractive', '-File', adapter, kind, name, 'probe'], { windowsHide: true }).catch(error => error);
+    const result = await exec(ps, ['-NoProfile', '-NonInteractive', '-File', adapter, kind, name, 'probe'], {
+      windowsHide: true, env: { ...process.env, PF_SUPERVISOR_TEST_DIAGNOSTICS: '1' }
+    }).catch(error => error);
+    if (result.stdout) console.error(result.stdout);
     if (result.stderr) console.error(result.stderr);
   };
   const project = { id: 'fixture', cwd, recipe: { timeout: 18000, supervisors: [
