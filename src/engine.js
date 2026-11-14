@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createConnection } from 'node:net';
 import { basename } from 'node:path';
-import { readFile, rmdir } from 'node:fs/promises';
+import { readlink, rmdir } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { candidates, directory, projectId, summarize } from './discovery.js';
 import { Fault, problem } from './errors.js';
@@ -268,22 +268,26 @@ export class Engine {
     if (this.current || this.tracking) return;
     this.tracking = true;
     try {
-      const projects = this.store.projects().filter(p => p.members.length);
+      const projects = this.store.projects();
       if (!projects.length) return;
       const rows = await scan(false);
       for (const project of projects) {
+        if (!project.members.length && !project.recipe?.systemd?.length && !project.recipe?.containers?.length) continue;
         const before = JSON.stringify(project);
-        await this.track(project, rows);
+        try { await this.track(project, rows); }
+        catch { if (project.state === 'frozen') { project.state = 'partial'; this.store.save(project); } continue; }
         const live = visible(rows, project);
         if (['running', 'adopted'].includes(project.state) && !live.length) project.state = 'exited';
         if (project.state === 'frozen') {
-          const units = await serviceTargets(project, projects);
-          const containers = await composeTargets(project, projects);
-          const servicePids = new Set((await Promise.all(units.map(systemdPids))).flat());
-          const observed = live.filter(row => !servicePids.has(row.pid));
-          if ((!live.length && !units.some(unit => unit.state?.FreezerState === 'frozen') && !containers.some(target => target.paused)) ||
-              observed.some(row => !suspended(row)) || units.some(unit => unit.state?.ActiveState === 'active' && unit.state.FreezerState !== 'frozen') ||
-              containers.some(target => target.running && !target.paused)) project.state = 'partial';
+          try {
+            const units = await serviceTargets(project, projects);
+            const containers = await composeTargets(project, projects);
+            const servicePids = new Set((await Promise.all(units.map(systemdPids))).flat());
+            const observed = live.filter(row => !servicePids.has(row.pid));
+            if ((!live.length && !units.some(unit => unit.state?.FreezerState === 'frozen') && !containers.some(target => target.paused)) ||
+                observed.some(row => !suspended(row)) || units.some(unit => unit.state?.ActiveState === 'active' && unit.state.FreezerState !== 'frozen') ||
+                containers.some(target => target.running && !target.paused)) project.state = 'partial';
+          } catch { project.state = 'partial'; }
         }
         if (JSON.stringify(project) !== before) this.store.save(project);
       }
@@ -540,16 +544,27 @@ export class Engine {
         }
       }
     }
+    const verify = async target => {
+      if (!alive(await scan(false), target)) throw new Fault('NOT_FOUND', 'The checkpoint root identity changed.');
+      const namespace = {};
+      for (const name of ['pid', 'mnt', 'net', 'user']) {
+        const [own, member] = await Promise.all([readlink(`/proc/self/ns/${name}`), readlink(`/proc/${target.pid}/ns/${name}`)]).catch(() => []);
+        if (!own || own !== member) throw new Fault('UNSUPPORTED', `CRIU capture requires the same ${name} namespace.`);
+        namespace[name] = own;
+      }
+      return namespace;
+    };
     const id = await checkpoint(this.state, project, root, backend, targets, id => {
       this.check(job);
       this.pending(job, project, `checkpoint ${id}`);
-    });
+    }, verify);
     this.record(job, project, id, 'captured');
   }
 
   async restore(job, project, input) {
     if (project.recipe?.systemd?.length) throw new Fault('UNSUPPORTED', 'Restore requires the original process and container scope.');
     if (visible(await scan(false), project).length) throw new Fault('BUSY', 'Stop the active workload before restoring a checkpoint.');
+    if (project.recipe?.ready && await listening(project.recipe.ready)) throw new Fault('BUSY', 'The original readiness port is already active.');
     const targets = await composeTargets(project, this.store.projects());
     project.state = 'restoring';
     const pid = await restore(this.state, project, input.checkpoint, targets, id => {
@@ -578,9 +593,14 @@ export class Engine {
       this.check(job);
       await this.track(project, rows);
       const live = visible(rows, project);
+      const units = await serviceTargets(project, this.store.projects());
+      const containers = await composeTargets(project, this.store.projects());
+      const servicePids = new Set((await Promise.all(units.map(systemdPids))).flat());
       const interrupted = this.store.history().find(op => op.status === 'interrupted' && op.projects.includes(project.id) && op.pending);
       if (interrupted || live.some(row => suspended(row) || ['t', 'M', '?'].includes(row.state)) || project.frozenContainers?.length || project.frozenUnits?.length) {
-        project.state = project.state === 'frozen' && live.every(suspended) ? 'frozen' : 'partial';
+        const isFrozen = live.filter(row => !servicePids.has(row.pid)).every(suspended) && containers.every(c => c.shared || !c.running || c.paused) &&
+          units.every(u => u.shared || u.state.ActiveState !== 'active' || (u.state.FreezerState === 'frozen' && !u.timer));
+        project.state = project.state === 'frozen' && isFrozen ? 'frozen' : 'partial';
       } else if (live.length) project.state = project.root ? 'running' : 'adopted';
       else if (project.state !== 'sleeping') project.state = 'exited';
       this.record(job, project, project.id, project.state);

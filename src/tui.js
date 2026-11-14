@@ -24,7 +24,7 @@ export async function interactive() {
   const colors = !Object.hasOwn(process.env, 'NO_COLOR') && process.env.TERM !== 'dumb';
   const selected = new Set();
   let cursor = 0, scroll = 0, filter = 0, sort = 0, search = '', projects = [];
-  let page = 'list', detail, expanded = false, editing, preview, active, done = false, updating = false;
+  let page = 'list', detail, expanded = false, editing, preview, active, done = false, updating = false, detaching;
   let message = 'Scanning authorized processes…';
   const visible = () => projects.filter(project => (filter === 0 || project.state === states[filter]) &&
     `${project.name} ${project.cwd} ${project.state}`.toLowerCase().includes(search.toLowerCase())).sort((a, b) =>
@@ -103,8 +103,10 @@ export async function interactive() {
     try {
       active = await request(action, args);
       draw();
-      const result = await waitOperation(active.id, op => { active = op; draw(); });
+      detaching = new AbortController();
+      const result = await waitOperation(active.id, op => { active = op; draw(); }, detaching.signal);
       message = `${action} ${result.status} ${result.outcomes.filter(o => o.status === 'failed').map(o => o.message).join(' ')}`;
+      return result.status === 'complete';
     } catch (error) { message = problem(error).message; }
     finally { active = undefined; void refresh(); }
   }
@@ -128,8 +130,10 @@ export async function interactive() {
       const approved = members.filter(row => pid.has(row.pid));
       if (!approved.length || approved.length !== pid.size) { message = 'Enter candidate PIDs shown in project inspection.'; return; }
       preview = { title: `Adopt ${approved.length} explicitly approved process(es)`, lines: approved.map(row => `${row.pid} ${row.image ?? row.cwd}`),
-        run: async () => { await act('adopt', { cwd: project.cwd, confirm: true, members: approved.map(({ pid, birth, boot }) => ({ pid, birth, boot })) });
-          if (freezeAfter) review('freeze', [project.id]); } };
+        run: async () => {
+          const adopted = await act('adopt', { cwd: project.cwd, confirm: true, members: approved.map(({ pid, birth, boot }) => ({ pid, birth, boot })) });
+          if (adopted && freezeAfter) review('freeze', [project.id]);
+        } };
     } };
     message = `Candidates ${members.map(row => row.pid).join(', ')}`;
   }
@@ -140,6 +144,7 @@ export async function interactive() {
   output.write(`${esc}?1049h${esc}?25l`);
   const exit = () => {
     done = true;
+    detaching?.abort();
     input.off('keypress', keypress);
     input.setRawMode(false);
     input.pause();

@@ -35,6 +35,10 @@ jobs:
           node-version: ${{ matrix.node }}
       - run: npm run build:native
       - run: npm test
+      - name: Verify non-loopback TLS with certificate validation
+        if: matrix.runner == 'ubuntu-24.04' && matrix.node == 24
+        shell: bash
+        run: PF_TEST_PUBLIC=1 node --test test/public.test.js
       - name: Verify user service and timer control
         if: matrix.runner == 'ubuntu-24.04' && matrix.node == 24
         shell: bash
@@ -92,3 +96,26 @@ jobs:
           name: candidate-tarball
           path: dist
       - run: node scripts/consumer.js
+
+  compose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - run: docker pull busybox:1.37
+      - run: PF_TEST_DOCKER=1 node --test --test-name-pattern=Compose test/backends.test.js
+
+  criu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - run: npm run build:native
+      - run: sudo apt-get update && sudo apt-get install -y criu
+      - run: sudo env PF_TEST_CRIU=1 PATH="$PATH:/usr/sbin" "$(command -v node)" --test --test-name-pattern=CRIU test/backends.test.js

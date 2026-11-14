@@ -243,7 +243,7 @@ export async function request(action, input = {}, autoStart = true) {
 
 export async function waitOperation(id, onProgress = () => {}, signal) {
   let last;
-  while (true) {
+  while (!signal?.aborted) {
     const op = await request('operation', { id });
     const stamp = `${op.status}/${op.outcomes.length}/${op.pending}`;
     if (stamp !== last) { onProgress(op); last = stamp; }
@@ -251,4 +251,5 @@ export async function waitOperation(id, onProgress = () => {}, signal) {
     if (signal?.aborted) return op;
     await delay(200);
   }
+  return { id, status: 'running', outcomes: [] };
 }

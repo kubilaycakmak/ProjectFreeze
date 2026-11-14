@@ -49,7 +49,7 @@ export async function candidates(projects, rows = undefined) {
   const byPid = new Map(processes.map(p => [p.pid, p]));
   for (const process of processes) {
     if (claimed.has(key(process))) continue;
-    const root = await rootFor(manifestStart(process), cache);
+    const root = await rootFor(manifestStart(process), cache) ?? await rootFor(process.cwd, cache);
     if (!root) continue;
     const id = projectId(root.path);
     const group = groups.get(id) ?? { id, name: basename(root.path), cwd: root.path, state: 'discovered',

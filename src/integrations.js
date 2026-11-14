@@ -12,11 +12,11 @@ const dockerEnv = () => {
   return env;
 };
 
-async function docker(args) {
+async function docker(args, options = {}) {
   const env = dockerEnv();
   const cli = await executable('docker', process.cwd(), env);
   const host = process.platform === 'win32' ? 'npipe:////./pipe/docker_engine' : 'unix:///var/run/docker.sock';
-  return command(cli, ['--host', host, ...args], { env });
+  return command(cli, ['--host', host, ...args], { env, ...options });
 }
 
 export async function composeTargets(project, all) {
@@ -31,7 +31,7 @@ export async function composeTargets(project, all) {
     if (!ids.length) throw new Fault('NOT_FOUND', `No existing Compose container matches ${service.project}/${service.service}.`);
     for (const id of ids) {
       const container = await inspectDocker(id);
-      const labels = container.Config.Labels;
+      const labels = container.Config.Labels ?? {};
       if (container.Id !== id || labels['com.docker.compose.project'] !== service.project ||
           labels['com.docker.compose.service'] !== service.service || labels['com.docker.compose.oneoff']?.toLowerCase() === 'true') {
         throw new Fault('DENIED', 'Compose container identity did not match the approved policy.');
@@ -55,7 +55,7 @@ async function inspectDocker(id) {
 export async function containerAction(action, id, timeout = 10000) {
   if (!['pause', 'unpause', 'start', 'stop'].includes(action)) throw new Fault('USAGE', 'Unknown container action.');
   await inspectDocker(id);
-  await docker([action, ...(action === 'stop' ? ['--timeout', String(Math.ceil(timeout / 1000))] : []), id]);
+  await docker([action, ...(action === 'stop' ? ['--timeout', String(Math.ceil(timeout / 1000))] : []), id], { timeout: timeout + 5000 });
   const { State: state } = await inspectDocker(id);
   const verified = { pause: state.Running && state.Paused, unpause: state.Running && !state.Paused,
     start: state.Running && !state.Paused, stop: !state.Running }[action];
@@ -63,17 +63,24 @@ export async function containerAction(action, id, timeout = 10000) {
 }
 
 async function hashFiles(path) {
-  const entries = await readdir(path);
   const files = {};
-  for (const name of entries.sort()) {
-    if (name === 'manifest.json') continue;
-    if (!/^[a-zA-Z0-9_.-]+$/.test(name) || !(await lstat(join(path, name))).isFile()) {
-      throw new Fault('DENIED', 'Checkpoint contains an unexpected file type.');
+  async function walk(relative) {
+    const entries = await readdir(join(path, relative));
+    for (const name of entries.sort()) {
+      if (!relative && name === 'manifest.json') continue;
+      const key = relative ? `${relative}/${name}` : name;
+      const file = join(path, key);
+      const info = await lstat(file);
+      if (!/^[a-zA-Z0-9_.-]+$/.test(name) || (!info.isDirectory() && !info.isFile())) {
+        throw new Fault('DENIED', 'Checkpoint contains an unexpected file type.');
+      }
+      if (info.isDirectory()) { await walk(key); continue; }
+      const hash = createHash('sha256');
+      for await (const chunk of createReadStream(file)) hash.update(chunk);
+      Object.defineProperty(files, key, { value: hash.digest('hex'), enumerable: true });
     }
-    const hash = createHash('sha256');
-    for await (const chunk of createReadStream(join(path, name))) hash.update(chunk);
-    Object.defineProperty(files, name, { value: hash.digest('hex'), enumerable: true });
   }
+  await walk('');
   if (!Object.keys(files).length) throw new Fault('PARTIAL', 'CRIU generated no images.');
   return files;
 }
@@ -81,37 +88,45 @@ async function hashFiles(path) {
 async function criu() {
   if (!linux) throw new Fault('UNSUPPORTED', 'Native checkpoint requires Linux CRIU. Use freeze/resume or sleep/wake on this host.');
   const cli = await executable('criu', process.cwd(), process.env);
-  await command(cli, ['check'], { timeout: 30000 }).catch(error => {
+  await command(cli, ['check', '--no-default-config'], { timeout: 30000 }).catch(error => {
     throw new Fault(error.code === 'DENIED' ? 'DENIED' : 'UNSUPPORTED', 'CRIU preflight failed. Verify kernel support and CRIU permissions.');
   });
   const version = (await command(cli, ['--version'])).trim();
   return { cli, version };
 }
 
-export async function checkpoint(state, project, root, backend, targets, mark) {
+export async function checkpoint(state, project, root, backend, targets, mark, verify) {
   const id = randomUUID();
   const path = join(state, `checkpoint-${id}`);
   const manifest = { schemaVersion: 1, id, backend, project: project.id, platform: process.platform, arch: arch(),
     kernel: release(), boot: await bootId(), cwd: project.cwd, captured: new Date().toISOString() };
   if (backend === 'docker') {
+    if (!linux) throw new Fault('UNSUPPORTED', 'Docker checkpoint images require a verifiable local Linux filesystem shared with the Docker engine.');
     const eligible = targets.filter(target => !target.shared && target.running && !target.paused);
     if (eligible.length !== 1 || targets.length !== 1 || root) throw new Fault('UNSUPPORTED', 'Docker checkpoint requires a single exclusive running container and no native workload.');
     const version = JSON.parse(await docker(['version', '--format', '{{json .Server}}']));
-    if (version.Os !== 'linux') throw new Fault('UNSUPPORTED', 'The Docker server must use a Linux CRIU runtime.');
-    Object.assign(manifest, { container: eligible[0].id, version: version.Version });
+    const info = JSON.parse(await docker(['info', '--format', '{{json .}}']));
+    if (version.Os !== 'linux' || !info.ExperimentalBuild || info.KernelVersion !== release()) {
+      throw new Fault('UNSUPPORTED', 'Docker checkpoint requires a local experimental Linux Docker engine with CRIU.');
+    }
+    const container = await inspectDocker(eligible[0].id);
+    if (container.Mounts.length || container.HostConfig.Privileged || container.HostConfig.NetworkMode !== 'none') {
+      throw new Fault('UNSUPPORTED', 'This Docker checkpoint scope requires network mode none, no mounts, and an unprivileged container.');
+    }
+    Object.assign(manifest, { container: container.Id, image: container.Image, version: version.Version });
     await mkdir(path, { mode: 0o700 });
     mark(id);
-    await docker(['checkpoint', 'create', '--leave-running', '--checkpoint-dir', path, manifest.container, id]);
+    await docker(['checkpoint', 'create', '--leave-running', '--checkpoint-dir', path, manifest.container, id], { timeout: 120000 });
     manifest.files = await hashFiles(join(path, id));
   } else {
     if (!root || targets.length) throw new Fault('UNSUPPORTED', 'Native checkpoint requires a live native root and no container dependencies.');
     const { cli, version } = await criu();
-    const [ownNamespace, childNamespace] = await Promise.all([readFile('/proc/self/status', 'utf8'), readFile(`/proc/${root.pid}/status`, 'utf8')]);
-    if (!ownNamespace.includes('NSpid:') || !childNamespace.includes('NSpid:')) throw new Fault('UNSUPPORTED', 'CRIU could not establish PID namespace metadata.');
-    Object.assign(manifest, { version, root });
+    const namespace = await verify(root);
+    Object.assign(manifest, { version, root, namespace });
     await mkdir(path, { mode: 0o700 });
     mark(id);
-    await command(cli, ['dump', '--tree', String(root.pid), '--images-dir', path, '--work-dir', path,
+    await verify(root);
+    await command(cli, ['dump', '--no-default-config', '--tree', String(root.pid), '--images-dir', path, '--work-dir', path,
       '--log-file', 'dump.log', '--leave-running'], { timeout: 120000 });
     manifest.files = await hashFiles(path);
   }
@@ -133,21 +148,23 @@ export async function restore(state, project, id, targets, mark) {
   if (JSON.stringify(await hashFiles(images)) !== JSON.stringify(manifest.files)) throw new Fault('DENIED', 'Checkpoint integrity verification failed.');
   if (manifest.backend === 'docker') {
     const version = JSON.parse(await docker(['version', '--format', '{{json .Server}}']));
-    if (version.Version !== manifest.version || !targets.some(t => !t.shared && !t.running && t.id === manifest.container)) {
+    const container = await inspectDocker(manifest.container);
+    if (version.Version !== manifest.version || container.Image !== manifest.image || !targets.some(t => !t.shared && !t.running && t.id === manifest.container)) {
       throw new Fault('DENIED', 'Restore requires the original stopped container and matching Docker version.');
     }
     mark(id);
-    await docker(['start', '--checkpoint', id, '--checkpoint-dir', path, manifest.container]);
+    await docker(['start', '--checkpoint', id, '--checkpoint-dir', path, manifest.container], { timeout: 120000 });
     if (!(await inspectDocker(manifest.container)).State.Running) throw new Fault('PARTIAL', 'Restored container is not running.');
     return undefined;
   }
+  if (manifest.backend !== 'criu') throw new Fault('DENIED', 'Unknown checkpoint backend.');
   const { cli, version } = await criu();
   if (manifest.version !== version || targets.length) throw new Fault('DENIED', 'Restore requires the original CRIU version and capture scope.');
   const work = join(state, `restore-${randomUUID()}`);
   await mkdir(work, { mode: 0o700 });
   mark(id);
   const pidFile = join(work, 'pid');
-  await command(cli, ['restore', '--images-dir', path, '--work-dir', work, '--log-file', 'restore.log',
+  await command(cli, ['restore', '--no-default-config', '--images-dir', path, '--work-dir', work, '--log-file', 'restore.log',
     '--restore-detached', '--pidfile', pidFile], { timeout: 120000 });
   return Number((await readFile(pidFile, 'utf8')).trim());
 }
