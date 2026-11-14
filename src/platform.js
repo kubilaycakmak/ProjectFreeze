@@ -157,7 +157,7 @@ async function nonLinuxRows(boot, full) {
   return rows;
 }
 
-export async function scan(full = true) {
+export async function scan(full = true, stagedPid) {
   await checkHelper();
   const boot = await bootId();
   let rows;
@@ -170,7 +170,7 @@ export async function scan(full = true) {
     }
     if (full) await linuxPorts(rows);
   } else rows = await nonLinuxRows(boot, full);
-  rows = rows.filter(row => row.pid > 1 && !ignored(row.pid) && row.image !== helper && row.projectHint !== cliPath);
+  rows = rows.filter(row => row.pid > 1 && !ignored(row.pid) && (row.pid === stagedPid || row.image !== helper) && row.projectHint !== cliPath);
   if (full) {
     const time = performance.now();
     const current = new Set();
@@ -231,7 +231,7 @@ export async function stageLaunch(argv, cwd, env, job, cgroup, onExit) {
       lines.once('close', () => reject(new Fault('DENIED', 'Native launcher could not prepare the workload.')));
     });
     const pid = windows ? Number(ready.split('\t')[0]) : child.pid;
-    const root = (await scan(false)).find(row => row.pid === pid);
+    const root = (await scan(false, pid)).find(row => row.pid === pid);
     if (!root || (windows && root.birth !== ready.split('\t')[1])) throw new Fault('PARTIAL', 'Launch identity could not be verified.');
     return { root: identity(root), release() { released = true; child.stdin.end('G'); child.unref(); }, abort() { child.stdin.end(); } };
   } catch (error) {
