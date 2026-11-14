@@ -61,31 +61,38 @@ static class Native {
     [DllImport("shell32", CharSet = CharSet.Unicode)] static extern IntPtr CommandLineToArgvW(string line, out int count);
     [DllImport("kernel32")] static extern IntPtr LocalFree(IntPtr pointer);
     [DllImport("iphlpapi")] static extern uint GetExtendedTcpTable(IntPtr table, ref int size, bool sorted, uint family, int kind, uint reserved);
+    [DllImport("iphlpapi")] static extern uint GetExtendedUdpTable(IntPtr table, ref int size, bool sorted, uint family, int kind, uint reserved);
 
-    static int Listeners() {
-        const int ownerPidListener = 3;
+    static uint SocketTable(bool udp, IntPtr table, ref int size, uint family) {
+        return udp ? GetExtendedUdpTable(table, ref size, false, family, 1, 0)
+            : GetExtendedTcpTable(table, ref size, false, family, 3, 0);
+    }
+
+    static int Listeners(bool udp) {
         const uint tooSmall = 122;
         foreach (uint family in new uint[] { 2, 23 }) {
             bool ipv6 = family == 23;
             int size = 0;
-            if (GetExtendedTcpTable(IntPtr.Zero, ref size, false, family, ownerPidListener, 0) != tooSmall) return 7;
+            if (SocketTable(udp, IntPtr.Zero, ref size, family) != tooSmall) return 7;
             bool read = false;
             for (int attempt = 0; attempt < 3 && size > 0 && size <= 16777216; attempt++) {
                 int capacity = size;
                 IntPtr table = Marshal.AllocHGlobal(capacity);
                 try {
-                    uint result = GetExtendedTcpTable(table, ref size, false, family, ownerPidListener, 0);
+                    uint result = SocketTable(udp, table, ref size, family);
                     if (result == tooSmall) continue;
                     if (result != 0) return 7;
-                    int length = ipv6 ? 56 : 24;
+                    int length = udp ? (ipv6 ? 28 : 12) : (ipv6 ? 56 : 24);
+                    int addressOffset = ipv6 || udp ? 0 : 4;
+                    int portOffset = ipv6 ? 20 : (udp ? 4 : 8);
                     int count = Marshal.ReadInt32(table);
                     if (count < 0 || count > (capacity - 4) / length) return 7;
                     for (int i = 0; i < count; i++) {
                         var row = IntPtr.Add(table, 4 + i * length);
                         var address = new byte[ipv6 ? 16 : 4];
-                        Marshal.Copy(IntPtr.Add(row, ipv6 ? 0 : 4), address, 0, address.Length);
+                        Marshal.Copy(IntPtr.Add(row, addressOffset), address, 0, address.Length);
                         var ip = ipv6 ? new IPAddress(address, (uint)IPAddress.NetworkToHostOrder(Marshal.ReadInt32(row, 16))) : new IPAddress(address);
-                        int port = (ushort)IPAddress.NetworkToHostOrder(Marshal.ReadInt16(row, ipv6 ? 20 : 8));
+                        int port = (ushort)IPAddress.NetworkToHostOrder(Marshal.ReadInt16(row, portOffset));
                         Console.WriteLine("{0}\t{1}\t{2}", Marshal.ReadInt32(row, length - 4), ip, port);
                     }
                     read = true;
@@ -294,7 +301,8 @@ static class Native {
         try {
             if (args.Length == 1 && args[0] == "scan") return Scan(false, IntPtr.Zero);
             if (args.Length == 1 && args[0] == "discover") return Scan(true, IntPtr.Zero);
-            if (args.Length == 1 && args[0] == "listeners") return Listeners();
+            if (args.Length == 1 && args[0] == "listeners") return Listeners(false);
+            if (args.Length == 1 && args[0] == "udp-sockets") return Listeners(true);
             if (args.Length == 2 && args[0] == "job-scan") return JobScan(args[1]);
             if (args.Length == 1 && args[0] == "boot") return Boot();
             if (args.Length == 2 && args[0] == "secure-directory") return SecureDirectory(args[1]);

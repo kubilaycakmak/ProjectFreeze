@@ -7,6 +7,8 @@ With no arguments, a terminal session opens the interactive interface. A redirec
 | `list`, `discover`, `inspect PROJECT` | Report registered projects, candidate projects, and scoped observations. |
 | `menu`, `menu --plain` | Open the live keyboard interface or its line-driven fallback. |
 | `listeners` | List TCP endpoints and PIDs for locally observable processes. Unassigned entries are read-only. |
+| `ports` | List local TCP listeners and bound UDP sockets. Reports a PID when ownership is available. |
+| `services` | List running services visible to the local Windows SCM, systemd system and user managers, or the current macOS launchd domain. |
 | `adopt --cwd DIR --member PID@BIRTH@BOOT --confirm` | Approve exact identities from current discovery. Repeat `--member` and `--exclude` as needed. `--recipe FILE` supplies restart settings. |
 | `run --cwd DIR -- EXECUTABLE ARG...` | Launch literal arguments. Use a fully qualified executable or an absolute PATH entry. |
 | `run --recipe FILE` | Launch a reviewed JSON recipe. |
@@ -21,7 +23,9 @@ With no arguments, a terminal session opens the interactive interface. A redirec
 
 Mutating commands wait for an operation result unless `--detach` is given. The operation has a UUID, action, project list, status, UTC timestamps, pending step, and per-resource outcomes. Closing the terminal or interrupting the CLI disconnects the client. `cancel ID` requests cancellation before the next resource boundary. Completed effects and in-flight native calls can survive cancellation.
 
-The live menu rescans on entry and periodically. Tab or Left/Right switches between Projects, TCP listeners, and History. Arrow keys and Page Up/Down move the selection or scroll details. Enter opens the selection or confirms a preview. Escape goes back or cancels. Search with `/` and use Space to select multiple projects. The TCP listener list comes from local OS tables and sends no network probes. Discovered processes need explicit ownership review before control.
+The live menu rescans on entry and periodically. Tab or Left/Right switches between Projects, Ports, Services, and History. Arrow keys and Page Up/Down move the selection or scroll details. Enter opens the selection or confirms a preview. Escape goes back or cancels. Search with `/` and use Space to select multiple projects. Ports and Services are read-only views. Ports reads local OS tables without probing the network. Linux Ports shows the current network namespace. Socket ownership or service manager access can depend on the current account. Discovered processes need explicit ownership review before control.
+
+Select one owned native project and press `k` to review force termination. The preview lists the exact process IDs. Press Enter to continue, then type `KILL` and press Enter again to authorize SIGKILL on Linux and macOS or TerminateProcess on Windows. Esc cancels either prompt. Force termination skips graceful shutdown and suppresses automatic restart. Use `w` to start again when a restart recipe is available. ProjectFreeze rejects a changed process set and directs projects with registered services or active dependents to their service shutdown workflow.
 
 ## Test Sleep and Wake
 

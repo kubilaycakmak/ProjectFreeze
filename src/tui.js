@@ -18,12 +18,13 @@ const mutations = {
   freeze: ['Freeze', 'Suspend reviewed processes. Memory and listening sockets stay allocated.'],
   resume: ['Resume', 'Resume the processes suspended by ProjectFreeze.'],
   sleep: ['Sleep', 'Shut down reviewed processes. Shared listeners may remain open.'],
+  kill: ['Force termination', 'Stop the reviewed native processes immediately. Unsaved work may be lost.'],
   wake: ['Wake', 'Start the saved recipe. Expect a new PID and reconnect to the workload.'],
   checkpoint: ['Checkpoint', 'Capture supported process state into private storage.'],
   restore: ['Restore', 'Restore a verified checkpoint into an inactive workload.'],
   reconcile: ['Reconcile', 'Check current process identities against the operation journal.']
 };
-const shortcuts = { f: 'freeze', u: 'resume', z: 'sleep', w: 'wake', c: 'checkpoint', o: 'restore', e: 'reconcile' };
+const shortcuts = { f: 'freeze', u: 'resume', z: 'sleep', k: 'kill', w: 'wake', c: 'checkpoint', o: 'restore', e: 'reconcile' };
 const filters = ['all', 'running', 'discovered', 'sleeping', 'frozen', 'partial'];
 const sorts = ['activity', 'name', 'ports', 'CPU'];
 
@@ -48,6 +49,8 @@ function available(project, action) {
   if (action === 'freeze') return project.processCount > 0 && project.state !== 'frozen';
   if (action === 'resume') return ['frozen', 'partial'].includes(project.state);
   if (action === 'sleep') return project.restart?.configured && !['sleeping', 'frozen', 'exited'].includes(project.state);
+  if (action === 'kill') return project.state !== 'discovered' && project.processCount > 0 &&
+    !project.containers?.length && !project.systemd?.length && !project.supervisors?.length;
   if (action === 'wake') return project.restart?.configured && ['sleeping', 'exited', 'partial'].includes(project.state) && project.processCount === 0;
   if (action === 'checkpoint') return project.state !== 'discovered' && project.processCount > 0;
   if (action === 'restore') return project.state !== 'discovered' && project.processCount === 0;
@@ -67,13 +70,14 @@ export async function interactive() {
   let tab = 0;
   let projects = [];
   let listeners = [];
+  let services = { rows: [], unavailable: [] };
   let history = [];
   let viewKey;
   let viewIndex = 0;
   let search = '';
   let filter = 0;
   let sort = 0;
-  let status = 'Scanning local projects and TCP listeners…';
+  let status = 'Scanning local projects…';
   let detail, dialog, operation, refreshPending, timer;
   let scanning = false;
   let handling = false;
@@ -81,7 +85,7 @@ export async function interactive() {
   let ended = false;
   let close;
   const done = new Promise(resolveClose => { close = resolveClose; });
-  const titles = ['Projects', 'TCP listeners', 'History'];
+  const titles = ['Projects', 'Ports', 'Services', 'History'];
 
   function entries() {
     const query = search.toLowerCase();
@@ -91,8 +95,10 @@ export async function interactive() {
     ).sort((a, b) => ((sort === 0 && Number(b.processCount > 0) - Number(a.processCount > 0)) ||
       (sort === 2 && b.ports.length - a.ports.length) || (sort === 3 && (b.cpuPercent ?? 0) - (a.cpuPercent ?? 0)) || a.name.localeCompare(b.name)))
       .map(project => ({ id: project.id, project }));
-    if (tab === 1) return listeners.filter(row => `${endpoint(row)} ${row.pid} ${row.name ?? ''} ${row.image ?? ''}`.toLowerCase().includes(query))
-      .map(row => ({ id: `${endpoint(row)}/${row.pid}`, listener: row }));
+    if (tab === 1) return listeners.filter(row => `${row.protocol} ${endpoint(row)} ${row.pid ?? ''} ${row.name ?? ''} ${row.image ?? ''}`.toLowerCase().includes(query))
+      .map(row => ({ id: `${row.protocol}/${endpoint(row)}/${row.pid}`, listener: row }));
+    if (tab === 2) return services.rows.filter(row => `${row.name} ${row.manager} ${row.pid ?? ''} ${row.description ?? ''}`.toLowerCase().includes(query))
+      .map(row => ({ id: `${row.manager}/${row.name}`, service: row }));
     return history.filter(row => `${row.action} ${row.status} ${row.id}`.includes(query)).map(row => ({ id: row.id, op: row }));
   }
 
@@ -107,11 +113,14 @@ export async function interactive() {
     const rows = entries();
     focused(rows);
     const subheading = tab === 0 ? `${projects.filter(row => row.processCount > 0).length} active  /  ${projects.length} projects  /  ${selected.size} selected` :
-      tab === 1 ? `${listeners.length} observed TCP endpoints  /  Read-only` : `${history.length} recent operations`;
+      tab === 1 ? `${listeners.length} local TCP/UDP endpoints  /  Read-only` : tab === 2 ?
+        `${services.rows.length} running services  /  Read-only${services.unavailable.length ? `  /  Unavailable: ${services.unavailable.join(', ')}` : ''}` :
+        `${history.length} recent operations`;
     const lines = [{ text: `${subheading}    ${search ? `Search: ${search}` : tab === 0 ? `Filter: ${filters[filter]}  Sort: ${sorts[sort]}` : ''}`, tone: '2' }];
     const nameSize = clamp(Math.floor(span * 0.37), 12, 36);
     if (span >= 60) lines.push({ text: tab === 0 ? `    ${fit('PROJECT', nameSize)} ${fit('STATE', 18)} ${fit('PROCS', 6)} TCP` :
-      tab === 1 ? '  TCP ENDPOINT                     PID       PROJECT / PROCESS' : '  ACTION          STATUS         OPERATION', tone: '36' });
+      tab === 1 ? '  PROTOCOL / LOCAL ENDPOINT            PID       PROJECT / PROCESS' : tab === 2 ?
+        `  ${fit('SERVICE', nameSize)} ${fit('MANAGER', 24)} PID` : '  ACTION          STATUS         OPERATION', tone: '36' });
     if (!rows.length) return [...lines, { text: scanning ? '  Scanning…' : '  No matching entries.' }];
     const count = Math.max(1, budget - lines.length);
     const offset = clamp(viewIndex - count + 1, 0, rows.length - count);
@@ -126,7 +135,11 @@ export async function interactive() {
           `${choice}${fit(p.name, Math.max(5, Math.min(nameSize, span - p.state.length - 7))).trimEnd()} ${p.state} ${ports(p.ports)}`;
       } else if (row.listener) {
         const p = row.listener;
-        text = span >= 60 ? `${fit(endpoint(p), 33)} ${fit(p.pid, 9)} ${p.name ?? basename(p.image ?? 'Unassigned')} (${p.scope})` : `${endpoint(p)}  PID ${p.pid}`;
+        const address = `${p.protocol.toUpperCase()} ${endpoint(p)}`;
+        text = span >= 60 ? `${fit(address, 38)} ${fit(p.pid ?? '—', 9)} ${p.name ?? basename(p.image ?? 'Unassigned')} (${p.scope})` : `${address}  PID ${p.pid ?? '—'}`;
+      } else if (row.service) {
+        const s = row.service;
+        text = span >= 60 ? `${fit(s.name, nameSize)} ${fit(s.manager, 24)} ${s.pid ?? '—'}` : `${s.name}  ${s.manager}`;
       } else text = `${fit(row.op.action, 15)} ${fit(row.op.status, 14)} ${row.op.id}`;
       lines.push({ text: pointer + text, tone: marked ? '7' : row.project?.state === 'partial' ? '33' : undefined });
     }
@@ -168,10 +181,11 @@ export async function interactive() {
         ...dialog.rows.map(row => `${dialog.approved.has(processKey(row)) ? '[x]' : '[ ]'} PID ${row.pid}  ${basename(row.image ?? '')}  TCP ${ports(row.ports) || '—'}`)] :
       dialog?.kind === 'help' ? ['Keyboard shortcuts', '', 'Tab / Shift+Tab or ←/→    Switch views', '↑/↓  PageUp/PageDown     Move or scroll',
         'Enter Inspect / Confirm   Space Select multiple   Esc Back', '/ Search   t Filter projects   s Sort projects   r Rescan',
-        'l Launch recipe   a Review ownership   f Freeze   u Resume', 'z Sleep   w Wake   c Checkpoint   o Restore   e Reconcile',
-        'x Cancel operation   q Quit / detach', '', 'TCP inventory is read-only until ownership has been reviewed.'] :
-      detail?.project ? projectPanel(detail.project) : detail?.listener ? [endpoint(detail.listener), '', `PID ${detail.listener.pid}`, detail.listener.image ?? '',
+        'l Launch recipe   a Review ownership   f Freeze   u Resume', 'z Sleep   w Wake   k Force termination',
+        'c Checkpoint   o Restore   e Reconcile   x Cancel operation   q Quit', '', 'Ports and Services are read-only. Review ownership in Projects.'] :
+      detail?.project ? projectPanel(detail.project) : detail?.listener ? [`${detail.listener.protocol.toUpperCase()} ${endpoint(detail.listener)}`, '', `PID ${detail.listener.pid ?? 'unknown'}`, detail.listener.image ?? '',
         `Project: ${detail.listener.name ?? 'Unassigned'}`, `Scope: ${detail.listener.scope}`, '', ...(detail.listener.project ? ['Enter Open project'] : [])] :
+      detail?.service ? [detail.service.name, detail.service.description ?? '', '', detail.service.manager, `PID ${detail.service.pid ?? 'unknown'}`, 'Read-only'] :
       [`${detail?.op.action}  [${detail?.op.status}]`, detail?.op.id, '', ...(detail?.op.outcomes ?? []).map(row => `${row.status}  ${row.target}  ${row.message ?? ''}`)];
     const panel = dialog ?? detail;
     const choice = dialog?.kind === 'adopt' ? dialog.index + 3 : undefined;
@@ -218,8 +232,9 @@ export async function interactive() {
         const current = await request('inspect', { id: inspected });
         if (detail?.project?.id === inspected) detail.project = current;
         projects = projects.map(row => row.id === inspected ? current : row);
-      } else if (screen === 1) listeners = await request('listeners');
-      else if (screen === 2) history = await request('history');
+      } else if (screen === 1) listeners = await request('ports');
+      else if (screen === 2) services = await request('services');
+      else if (screen === 3) history = await request('history');
       else projects = await request('list');
       refreshed = true;
     } catch (error) { status = problem(error).message; }
@@ -272,6 +287,24 @@ export async function interactive() {
       [display[1], '',
         ...targets.map(p => `${p.name}  ${p.processCount} process(es)  TCP ${ports(p.ports) || '—'}`)],
       () => act(action, { ids: targets.map(p => p.id), ...args }));
+  }
+
+  async function reviewKill(targets) {
+    if (targets.length !== 1 || !available(targets[0], 'kill')) {
+      status = 'Select one owned native project without registered services to force terminate.';
+      return;
+    }
+    const project = await request('inspect', { id: targets[0].id });
+    if (ended) return;
+    if (!available(project, 'kill')) { status = 'The selected project no longer has eligible processes.'; return; }
+    const members = project.processes.map(identity);
+    confirm(`Force terminate ${project.name}?`, [mutations.kill[1], project.cwd, '',
+      ...project.processes.map(row => `PID ${row.pid}  ${basename(row.image ?? '')}  TCP ${ports(row.ports) || '—'}`)], () => {
+      edit('Type KILL to confirm force termination', '', async text => {
+        if (text !== 'KILL') { status = 'Force termination cancelled.'; return; }
+        await act('kill', { ids: [project.id], confirm: true, members });
+      });
+    });
   }
 
   async function adopt(project, after) {
@@ -355,7 +388,8 @@ export async function interactive() {
     if (name === 'r') { void refresh(); return; }
     if (name === 'tab') { switchTab(tab + (key.shift ? -1 : 1)); return; }
     if (name === 'p') { switchTab(1); return; }
-    if (name === 'h') { switchTab(2); return; }
+    if (name === 'v') { switchTab(2); return; }
+    if (name === 'h') { switchTab(3); return; }
     if (str === '/') { edit(`Search ${titles[tab].toLowerCase()}`, search, text => { search = text; detail = undefined; viewKey = undefined; viewIndex = 0; }); return; }
     if (name === 'l' && !operation) {
       edit('Path to JSON launch recipe', '', async path => {
@@ -399,6 +433,7 @@ export async function interactive() {
     const targets = !detail && selected.size ? projects.filter(row => selected.has(row.id)) : [project];
     if (!targets.length) { status = 'The selected projects are no longer visible.'; return; }
     if (action === 'freeze') { await freeze(targets.map(row => row.id)); return; }
+    if (action === 'kill') { await reviewKill(targets); return; }
     if (action === 'restore') { edit('Checkpoint ID', '', checkpoint => { if (checkpoint) review(action, targets, { checkpoint }); }); return; }
     review(action, targets);
   }
@@ -407,7 +442,7 @@ export async function interactive() {
     if (ended) return;
     if (handling && !(key?.ctrl && key.name === 'c') && !(operation && ['x', 'q'].includes(key?.name))) return;
     const locked = !handling && (key?.name === 'return' || key?.name === 'x' ||
-      (!dialog && ['a', 'f'].includes(key?.name)));
+      (!dialog && ['a', 'f', 'k'].includes(key?.name)));
     if (locked) handling = true;
     void handle(str, key).catch(error => { status = problem(error).message; }).finally(() => {
       if (locked) handling = false;

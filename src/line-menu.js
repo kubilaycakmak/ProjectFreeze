@@ -41,10 +41,17 @@ export async function lineMenu() {
     for (const outcome of result.outcomes.filter(item => item.status === 'failed')) write(clean(outcome.message ?? outcome.code));
   }
   async function showListeners() {
-    const ports = await request('listeners');
-    write('TCP listeners (read-only)');
-    if (!ports.length) write('No TCP listeners observed.');
-    for (const port of ports) write(clean(`${port.address.includes(':') ? `[${port.address}]` : port.address}:${port.port}  PID ${port.pid}  ${port.name ?? port.image ?? 'unassigned'}  (${port.scope})`));
+    const ports = await request('ports');
+    write('Local TCP and UDP ports (read-only)');
+    if (!ports.length) write('No local endpoints observed.');
+    for (const port of ports) write(clean(`${port.protocol.toUpperCase()} ${port.address.includes(':') ? `[${port.address}]` : port.address}:${port.port}  PID ${port.pid ?? 'unknown'}  ${port.name ?? port.image ?? 'unassigned'}  (${port.scope})`));
+  }
+  async function showServices() {
+    const { rows, unavailable } = await request('services');
+    write('Running services (read-only)');
+    if (!rows.length) write('No running services observed.');
+    for (const row of rows) write(clean(`${row.manager}  ${row.name}  PID ${row.pid ?? 'unknown'}  ${row.description ?? ''}`));
+    for (const scope of unavailable) write(clean(`${scope} service manager unavailable`));
   }
   async function loadRecipe(path) {
     const recipe = JSON.parse(await readFile(resolve(path), 'utf8'));
@@ -81,13 +88,13 @@ export async function lineMenu() {
       if (!numbers.has(project.id)) numbers.set(project.id, numbers.size + 1);
       return clean(`${numbers.get(project.id)}. ${project.name} [${project.state}]  TCP ${endpoints(project.ports)}  ${project.processCount} process(es)`);
     });
-    return lines.join('\n') || 'No projects observed. Use p to view TCP listeners.';
+    return lines.join('\n') || 'No projects observed. Use p to view local ports.';
   }
   try {
     while (!abort.signal.aborted) {
       try {
         const scan = () => request('list').then(rows => rows.sort((a, b) => b.processCount - a.processCount || a.name.localeCompare(b.name)));
-        const prompt = 'Project number   p Ports   l Launch recipe   Enter Refresh   q Quit';
+        const prompt = 'Project number   p Ports   v Services   l Launch recipe   Enter Refresh   q Quit';
         let projects = await scan();
         let rendered = renderProjects(projects);
         write(`\nProjectFreeze\n${rendered}`);
@@ -113,6 +120,7 @@ export async function lineMenu() {
         finally { waiting = false; clearInterval(timer); }
         if (value === 'q' || value === undefined) return;
         if (value === 'p') await showListeners();
+        else if (value === 'v') await showServices();
         else if (value === 'l') {
           const path = await ask('Path to JSON launch recipe (Enter cancels)');
           if (path) {

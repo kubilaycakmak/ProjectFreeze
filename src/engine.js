@@ -6,7 +6,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { candidates, directory, projectId, summarize } from './discovery.js';
 import { Fault, problem } from './errors.js';
 import { checkpoint, composeTargets, containerAction, restore } from './integrations.js';
-import { bootId, command, containerPids, control, executable, identity, key, matches, scan, stageLaunch, windows } from './platform.js';
+import { bootId, command, containerPids, control, executable, identity, key, localPorts, matches, scan, stageLaunch, windows } from './platform.js';
+import { localServices } from './inventory.js';
 import { launchEnv, prepareCgroup, recipe } from './recipe.js';
 import { serviceAction, serviceTargets, systemdPids } from './systemd.js';
 import { observeSupervisors, supervisorAction, supervisorTargets } from './supervisors.js';
@@ -18,7 +19,7 @@ const visible = (rows, project) => rows.filter(row => !stopped(row) && project.m
 const runningService = (containers, units) => containers.some(target => !target.shared && target.running) ||
   units.some(unit => !unit.shared && !unit.timer && unit.state.ActiveState === 'active');
 const newProject = (id, cwd) => ({ id, cwd, name: basename(cwd), members: [], excluded: [], state: 'registered' });
-const changes = new Set(['adopt', 'run', 'freeze', 'resume', 'sleep', 'wake', 'checkpoint', 'restore', 'reconcile']);
+const changes = new Set(['adopt', 'run', 'freeze', 'resume', 'sleep', 'kill', 'wake', 'checkpoint', 'restore', 'reconcile']);
 
 async function listening({ address, port }) {
   return new Promise(resolve => {
@@ -48,7 +49,8 @@ export class Engine {
       this.current.cancelled = true;
       return { id: input.id, cancellation: 'requested' };
     }
-    if (['list', 'discover', 'inspect', 'listeners'].includes(action)) return this.inspect(action, input);
+    if (action === 'services') return localServices();
+    if (['list', 'discover', 'inspect', 'listeners', 'ports'].includes(action)) return this.inspect(action, input);
     if (!changes.has(action)) throw new Fault('USAGE', 'Unknown operation.');
     while (this.tracking) await delay(25);
     if (this.current || this.closing) throw new Fault('BUSY', 'An operation is running or the daemon is shutting down.');
@@ -75,12 +77,15 @@ export class Engine {
     const managed = projects.map(project => summarize(project, rows, observed.find(d => d.id === project.id)));
     const combined = [...managed, ...observed.filter(candidate => !projects.some(p => p.id === candidate.id))];
     if (action === 'list') return combined;
-    if (action === 'listeners') {
+    if (action === 'listeners' || action === 'ports') {
       const association = new Map(observed.flatMap(project => project.processes.map(row => [row.pid, { project: project.id, name: project.name, scope: 'observed' }])));
       for (const project of managed) {
         for (const row of project.processes) association.set(row.pid, { project: project.id, name: project.name, scope: 'managed' });
       }
-      return rows.flatMap(row => row.ports.map(port => ({ ...port, pid: row.pid, image: row.image, scope: 'unassigned', ...association.get(row.pid) })))
+      const images = new Map(rows.map(row => [row.pid, row.image]));
+      const endpoints = action === 'ports' ? await localPorts(rows) : rows.flatMap(row => row.ports.map(port => ({ ...port, pid: row.pid })));
+      return [...new Map(endpoints.map(row => [`${row.protocol}/${row.address}/${row.port}/${row.pid}`, row])).values()]
+        .map(row => ({ ...row, image: images.get(row.pid), scope: 'unassigned', ...association.get(row.pid) }))
         .sort((a, b) => a.port - b.port || a.address.localeCompare(b.address) || a.pid - b.pid);
     }
     const project = combined.find(p => p.id === input.id);
@@ -142,11 +147,12 @@ export class Engine {
             if (op.action === 'freeze') await this.freeze(job, project);
             if (op.action === 'resume') await this.resume(job, project);
             if (op.action === 'sleep') await this.sleep(job, project, input);
+            if (op.action === 'kill') await this.kill(job, project, input);
             if (op.action === 'wake') await this.wake(job, project);
             if (op.action === 'checkpoint') await this.capture(job, project, input);
             if (op.action === 'restore') await this.restore(job, project, input);
           } catch (error) {
-            if (['freezing', 'resuming', 'sleeping-in-progress', 'waking', 'restoring'].includes(project.state)) project.state = 'partial';
+            if (['freezing', 'resuming', 'sleeping-in-progress', 'terminating', 'waking', 'restoring'].includes(project.state)) project.state = 'partial';
             this.record(job, project, id, 'failed', error);
             if (error.code === 'CANCELLED' || ['wake', 'sleep'].includes(op.action)) break;
           }
@@ -542,6 +548,49 @@ export class Engine {
     }
     project.state = 'sleeping';
     this.record(job, project, project.id, 'sleeping');
+  }
+
+  async kill(job, project, input) {
+    if (input.confirm !== true || input.ids?.length !== 1 || !input.members?.length) {
+      throw new Fault('DENIED', 'Force termination requires confirmation for one project and its exact reviewed process identities.');
+    }
+    const configuration = project.recipe;
+    const all = this.store.projects();
+    const dependents = all.some(other => other.id !== project.id && other.recipe?.dependencies?.includes(project.id) &&
+      !['sleeping', 'exited', 'registered'].includes(other.state));
+    if (configuration?.containers?.length || configuration?.systemd?.length || configuration?.supervisors?.length || dependents) {
+      throw new Fault('DENIED', 'Use the service or dependency shutdown workflow for this project.');
+    }
+    const rows = await scan(false);
+    await this.track(project, rows);
+    const targets = visible(rows, project);
+    const approved = new Set(input.members.map(key));
+    if (!targets.length || targets.length !== approved.size || targets.some(row => !approved.has(key(row)))) {
+      throw new Fault('DENIED', 'Project ownership changed. Inspect the current processes and confirm again.');
+    }
+    this.check(job);
+    project.sleepingIntent = true;
+    project.state = 'terminating';
+    this.pending(job, project, 'disable managed restart before force termination');
+    for (const row of targets.sort((a, b) => Number(Boolean(matches(a, project.root))) - Number(Boolean(matches(b, project.root))))) {
+      this.check(job);
+      this.pending(job, project, `force terminate process ${key(row)}`, { kind: 'process', verb: 'force', identity: identity(row) });
+      try { await control('force', row); }
+      catch (error) { if (error.code !== 'NOT_FOUND') throw error; }
+      this.record(job, project, String(row.pid), 'force-stop-requested');
+    }
+    const deadline = Date.now() + 3000;
+    do {
+      const current = await scan(false);
+      await this.track(project, current);
+      if (!visible(current, project).length) {
+        project.state = project.recipe ? 'sleeping' : 'exited';
+        this.record(job, project, project.id, project.state);
+        return;
+      }
+      await delay(100);
+    } while (Date.now() < deadline);
+    throw new Fault('PARTIAL', 'Processes remain after force termination. Inspect the project before another action.');
   }
 
   async wake(job, project) {
