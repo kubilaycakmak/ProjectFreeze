@@ -55,6 +55,43 @@ static class Native {
     [DllImport("advapi32")] static extern bool GetTokenInformation(IntPtr token, int type, IntPtr data, int length, out int actual);
     [DllImport("ntdll")] static extern int NtSuspendProcess(IntPtr process);
     [DllImport("ntdll")] static extern int NtResumeProcess(IntPtr process);
+    [DllImport("ntdll")] static extern int NtQueryInformationProcess(IntPtr process, int info, IntPtr buffer, int length, out int written);
+    [DllImport("ntdll")] static extern int NtQuerySystemInformation(int info, [Out] byte[] buffer, int length, out int written);
+    [DllImport("shell32", CharSet = CharSet.Unicode)] static extern IntPtr CommandLineToArgvW(string line, out int count);
+    [DllImport("kernel32")] static extern IntPtr LocalFree(IntPtr pointer);
+
+    static string ScriptHint(IntPtr handle) {
+        int size;
+        NtQueryInformationProcess(handle, 60, IntPtr.Zero, 0, out size);
+        if (size <= 0 || size > 131072) return "";
+        IntPtr data = Marshal.AllocHGlobal(size);
+        try {
+            if (NtQueryInformationProcess(handle, 60, data, size, out size) != 0) return "";
+            IntPtr text = Marshal.ReadIntPtr(data, IntPtr.Size);
+            int count;
+            IntPtr args = CommandLineToArgvW(Marshal.PtrToStringUni(text, Marshal.ReadInt16(data) / 2), out count);
+            if (args == IntPtr.Zero) return "";
+            try {
+                for (int i = 1; i < Math.Min(count, 8); i++) {
+                    string item = Marshal.PtrToStringUni(Marshal.ReadIntPtr(args, i * IntPtr.Size));
+                    if (System.Text.RegularExpressions.Regex.IsMatch(item, @"^(?:[a-zA-Z]:[\\/]|\\\\).+\.(?:[cm]?js|tsx?|py|rb|jar|php)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) {
+                        return Convert.ToBase64String(Encoding.UTF8.GetBytes(item));
+                    }
+                }
+                return "";
+            } finally { LocalFree(args); }
+        } finally { Marshal.FreeHGlobal(data); }
+    }
+
+    static int Boot() {
+        var data = new byte[32];
+        int written;
+        if (NtQuerySystemInformation(90, data, data.Length, out written) != 0) return 5;
+        var id = new Guid(data.Take(16).ToArray());
+        if (id == Guid.Empty) return 5;
+        Console.WriteLine(id);
+        return 0;
+    }
 
     static bool Owned(IntPtr handle) {
         IntPtr token;
@@ -111,7 +148,7 @@ static class Native {
         } finally { CloseHandle(handle); }
     }
 
-    static int Scan() {
+    static int Scan(bool full) {
         IntPtr snapshot = CreateToolhelp32Snapshot(2, 0);
         if (snapshot == new IntPtr(-1)) return 4;
         try {
@@ -131,9 +168,9 @@ static class Native {
                     long rss = GetProcessMemoryInfo(handle, memory, memory.Length) ?
                         (IntPtr.Size == 8 ? BitConverter.ToInt64(memory, 16) : BitConverter.ToUInt32(memory, 12)) : -1;
                     int state = Suspension((int)entry.pid);
-                    Console.WriteLine("{0}\t{1}\t{2}\t{3}\t{4}\t{5}\t{6}", entry.pid, entry.parent, created,
+                    Console.WriteLine("{0}\t{1}\t{2}\t{3}\t{4}\t{5}\t{6}\t{7}", entry.pid, entry.parent, created,
                         state == 1 ? "T" : state == 2 ? "M" : state < 0 ? "?" : "R", (kernel + user) * 100, rss,
-                        Convert.ToBase64String(Encoding.UTF8.GetBytes(path.ToString())));
+                        Convert.ToBase64String(Encoding.UTF8.GetBytes(path.ToString())), full ? ScriptHint(handle) : "");
                 } finally { CloseHandle(handle); }
             } while (Process32Next(snapshot, ref entry));
             return 0;
@@ -216,7 +253,9 @@ static class Native {
 
     static int Main(string[] args) {
         try {
-            if (args.Length == 1 && args[0] == "scan") return Scan();
+            if (args.Length == 1 && args[0] == "scan") return Scan(false);
+            if (args.Length == 1 && args[0] == "discover") return Scan(true);
+            if (args.Length == 1 && args[0] == "boot") return Boot();
             if (args.Length == 2 && args[0] == "secure-directory") return SecureDirectory(args[1]);
             if (args.Length == 2 && args[0] == "members") return Members(args[1]);
             if (args.Length >= 3 && args[0] == "launch") return Launch(args);

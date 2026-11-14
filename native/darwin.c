@@ -36,8 +36,8 @@ static int scan(void) {
         struct proc_vnodepathinfo cwd;
         identity(&data.pbsd, birth, sizeof(birth));
         proc_pidpath(pid, image, sizeof(image));
-        printf("%d\t%u\t%u\t%s\t%s\t%llu\t%llu\t", pid, data.pbsd.pbi_ppid,
-               data.pbsd.pbi_pgid, birth, data.pbsd.pbi_status == SSTOP ? "T" : "R",
+        printf("%d\t%u\t%u\t%d\t%s\t%s\t%llu\t%llu\t", pid, data.pbsd.pbi_ppid,
+               data.pbsd.pbi_pgid, getsid(pid), birth, data.pbsd.pbi_status == SSTOP ? "T" : "R",
                (unsigned long long)(data.ptinfo.pti_total_user + data.ptinfo.pti_total_system),
                (unsigned long long)data.ptinfo.pti_resident_size);
         escaped(image);

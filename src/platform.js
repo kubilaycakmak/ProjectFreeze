@@ -14,8 +14,6 @@ export const linux = process.platform === 'linux';
 const name = `projectfreeze-${process.platform}-${process.arch}${windows ? '.exe' : ''}`;
 export const helper = fileURLToPath(new URL(`../helpers/${name}`, import.meta.url));
 const sys = windows ? join(process.env.SystemRoot, 'System32') : '/usr/bin';
-const ps = join(sys, 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-const powershell = (script) => command(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script]);
 const samples = new Map();
 const knownStates = new Set(['R', 'S', 'D', 'T', 't', 'I', 'M', '?', 'P', 'Z', 'X']);
 const ignorePids = new Set([process.pid]);
@@ -46,7 +44,7 @@ export function checkHelper() {
 let boot;
 export function bootId() {
   return boot ??= (linux ? readFile('/proc/sys/kernel/random/boot_id', 'utf8') : windows
-    ? powershell('(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().Ticks')
+    ? command(helper, ['boot'])
     : command('/usr/sbin/sysctl', ['-n', 'kern.bootsessionuuid'])).then(value => {
     const id = value.trim();
     if (!/^[a-f0-9-]{12,80}$/i.test(id)) throw new Fault('UNAVAILABLE', 'A stable boot identity could not be verified.');
@@ -126,30 +124,22 @@ async function linuxPorts(rows) {
 function decode(text, encoding) { return text ? Buffer.from(text, encoding).toString('utf8') : undefined; }
 
 async function nonLinuxRows(boot, full) {
-  const result = await command(helper, ['scan']);
-  const rows = result.trimEnd().split('\n').filter(Boolean).map(line => {
+  const result = await command(helper, [windows && full ? 'discover' : 'scan']);
+  const rows = result.split('\n').filter(Boolean).map(line => {
     const fields = line.replace(/\r$/, '').split('\t');
     if (windows) {
-      const [pid, parent, birth, state, cpuTime, rss, image] = fields;
+      const [pid, parent, birth, state, cpuTime, rss, image, hint] = fields;
       return { pid: +pid, parent: +parent, group: 0, session: 0, boot, birth, state, cpuTime: +cpuTime,
-        rss: +rss < 0 ? undefined : +rss, image: decode(image, 'base64'), ports: [] };
+        rss: +rss < 0 ? undefined : +rss, image: decode(image, 'base64'), projectHint: decode(hint, 'base64'), ports: [] };
     }
-    const [pid, parent, group, birth, state, cpuTime, rss, image, cwd] = fields;
-    return { pid: +pid, parent: +parent, group: +group, session: 0, boot, birth, state, cpuTime: +cpuTime, rss: +rss,
+    const [pid, parent, group, session, birth, state, cpuTime, rss, image, cwd] = fields;
+    return { pid: +pid, parent: +parent, group: +group, session: +session, boot, birth, state, cpuTime: +cpuTime, rss: +rss,
       image: decode(image, 'hex'), cwd: decode(cwd, 'hex'), ports: [] };
   });
   if (!full) return rows;
   const byPid = new Map(rows.map(row => [row.pid, row]));
   if (windows) {
-    const [net, args] = await Promise.all([
-      command(join(sys, 'netstat.exe'), ['-ano', '-p', 'tcp']).catch(() => ''),
-      powershell('[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress').catch(() => '[]')
-    ]);
-    const observed = JSON.parse(args || '[]');
-    for (const item of Array.isArray(observed) ? observed : [observed]) {
-      const row = byPid.get(item?.ProcessId);
-      if (row && item.CommandLine) row.projectHint = argumentHint([...item.CommandLine.matchAll(/"([^"]*)"|([^\s"]+)/g)].map(m => m[1] ?? m[2]));
-    }
+    const net = await command(join(sys, 'netstat.exe'), ['-ano', '-p', 'tcp']).catch(() => '');
     for (const line of net.split('\n')) {
       const match = line.match(/^\s*TCP\s+(\S+):(\d+)\s+\S+\s+LISTENING\s+(\d+)\s*$/);
       if (match) byPid.get(+match[3])?.ports.push({ address: match[1].replace(/^\[|\]$/g, ''), port: +match[2] });
@@ -254,8 +244,12 @@ export async function containerPids(project) {
     return new Set((await command(helper, ['members', project.job])).trim().split(/\s+/).map(Number));
   }
   if (linux && project.cgroup) {
-    const rows = await readFile(join(project.cgroup, 'cgroup.procs'), 'utf8');
-    return new Set(rows.trim().split(/\s+/).map(Number));
+    const walk = async dir => {
+      const rows = await readFile(join(dir, 'cgroup.procs'), 'utf8');
+      const directories = (await readdir(dir, { withFileTypes: true })).filter(item => item.isDirectory());
+      return [...rows.trim().split(/\s+/).map(Number), ...(await Promise.all(directories.map(item => walk(join(dir, item.name))))).flat()];
+    };
+    return new Set(await walk(project.cgroup));
   }
   return null;
 }

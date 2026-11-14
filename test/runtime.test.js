@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { createConnection, createServer } from 'node:net';
-import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -26,7 +26,7 @@ async function eventually(callback, message, timeout = 14000) {
 }
 
 test('real ownership, lifecycle, IPC authentication, public workload policy and MCP', { timeout: 130000 }, async t => {
-  const base = await mkdtemp(join(tmpdir(), 'pf-'));
+  const base = await realpath(await mkdtemp(join(tmpdir(), 'pf-')));
   const project = join(base, 'Project ü with spaces');
   const foreign = join(base, 'Unrelated process');
   const state = join(base, 'state');

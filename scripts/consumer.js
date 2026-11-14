@@ -18,7 +18,7 @@ const npmRun = args => execFileSync(npm, windows ? ['/d', '/c', 'npm', ...args] 
 const cli = join(base, 'node_modules', '@kubilaycakmak', 'projectfreeze', 'bin', 'projectfreeze.js');
 const run = args => JSON.parse(execFileSync(process.execPath, [cli, '--json', ...args], options).toString());
 try {
-  npmRun(['install', '--ignore-scripts', '--offline', '--no-audit', '--no-fund', windows ? `"${path}"` : path]);
+  npmRun(['install', '--ignore-scripts', '--offline', '--no-audit', '--no-fund', path]);
   assert.equal(run(['list']).ok, true);
   assert.equal(run(['daemon', 'status']).data.protocol, 1);
   assert.equal(run(['daemon', 'stop']).ok, true);

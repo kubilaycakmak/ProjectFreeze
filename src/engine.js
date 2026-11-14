@@ -231,11 +231,13 @@ export class Engine {
       if (!windows || error.code !== 'NOT_FOUND') throw error;
     }
     const root = alive(rows, project.root);
+    const groupProof = root ?? (!windows && !project.cgroup && rows.find(row => row.group === project.root.pid &&
+      row.session === project.root.pid && project.members.some(member => matches(member, row))));
     const foreign = new Set(this.store.projects().filter(other => other.id !== project.id).flatMap(other => other.members.map(key)));
     for (const row of rows) {
       if (stopped(row) || foreign.has(key(row)) || project.excluded.some(item => matches(item, row)) ||
           project.members.some(item => matches(item, row))) continue;
-      if (contained?.has(row.pid) || (!contained && root && row.group === root.pid && row.group === root.group)) {
+      if (contained?.has(row.pid) || (!contained && groupProof && row.group === project.root.pid && row.group === groupProof.group)) {
         project.members.push({ ...identity(row), source: 'contained' });
       }
     }
