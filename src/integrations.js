@@ -75,6 +75,7 @@ async function hashFiles(path) {
         throw new Fault('DENIED', 'Checkpoint contains an unexpected file type.');
       }
       if (info.isDirectory()) { await walk(key); continue; }
+      if (name.endsWith('.log')) continue;
       const hash = createHash('sha256');
       for await (const chunk of createReadStream(file)) hash.update(chunk);
       Object.defineProperty(files, key, { value: hash.digest('hex'), enumerable: true });

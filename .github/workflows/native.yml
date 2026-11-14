@@ -141,4 +141,4 @@ jobs:
           sudo install -m 0644 "$RUNNER_TEMP/docker-daemon.json" /etc/docker/daemon.json
           sudo systemctl restart docker
       - run: docker pull busybox:1.37
-      - run: sudo env PF_TEST_DOCKER=1 PF_TEST_DOCKER_CHECKPOINT=1 PATH="$PATH:/usr/sbin" "$(command -v node)" --test --test-name-pattern=Compose test/backends.test.js
+      - run: sudo env GITHUB_ACTIONS=true PF_TEST_DOCKER=1 PF_TEST_DOCKER_CHECKPOINT=1 PATH="$PATH:/usr/sbin" "$(command -v node)" --test --test-name-pattern=Compose test/backends.test.js

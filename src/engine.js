@@ -65,6 +65,7 @@ export class Engine {
   async inspect(action, input) {
     const projects = this.store.projects();
     const rows = await scan();
+    for (const project of projects) if (project.root) await this.track(project, rows).catch(() => {});
     const discovered = await candidates(projects, rows);
     const observed = discovered.map(group => ({ ...group, processes: group.members, processCount: group.members.length,
       ports: group.members.flatMap(member => member.ports), dependencies: [], containers: [], systemd: [] }));
@@ -216,7 +217,11 @@ export class Engine {
       this.check(job);
       const rows = await scan(Boolean(project.recipe?.ready));
       await this.track(project, rows);
-      if (project.root && !visible(rows, project).length) throw new Fault('PARTIAL', 'Workload exited before readiness.');
+      if (project.root && !visible(rows, project).length) {
+        if (Date.now() + 250 >= deadline) throw new Fault('PARTIAL', 'Workload exited before readiness.');
+        await delay(200);
+        continue;
+      }
       const port = project.recipe?.ready;
       if (!port || (visible(rows, project).some(row => row.ports.some(p => p.port === port.port &&
         [port.address, '0.0.0.0', '*', '::', '0:0:0:0:0:0:0:0'].includes(p.address))) && await listening(port))) return;
