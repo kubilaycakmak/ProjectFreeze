@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -11,13 +11,14 @@ import { promisify } from 'node:util';
 const exec = promisify(execFile);
 const bin = fileURLToPath(new URL('../bin/projectfreeze.js', import.meta.url));
 
-async function until(fn) {
-  for (let i = 0; i < 80; i++) {
+async function until(fn, message = 'Expected state was not observed.', timeout = 12000) {
+  const deadline = Date.now() + timeout;
+  do {
     const result = await fn();
     if (result) return result;
     await delay(150);
-  }
-  assert.fail('Expected state was not observed.');
+  } while (Date.now() < deadline);
+  assert.fail(message);
 }
 
 test('restart evidence and interrupted shutdown survive a daemon crash', { timeout: 100000 }, async t => {
@@ -59,9 +60,15 @@ setInterval(() => {
   };
   await crash();
   await writeFile(join(cwd, `fail-${first}`), '');
-  await delay(650);
+  await until(async () => {
+    const receipt = (await readdir(env.PROJECTFREEZE_HOME)).find(name => /^exit-[a-f0-9-]{36}$/.test(name));
+    return receipt && await readFile(join(env.PROJECTFREEZE_HOME, receipt), 'utf8') === '11\n';
+  }, 'The launch supervisor did not record the failure while the daemon was down.', 30000);
   assert.equal((await call('daemon', 'start')).ok, true);
-  const second = await until(async () => { const pid = Number(await read('worker.pid')); return pid !== first && pid; });
+  const second = await until(async () => {
+    const pid = Number(await read('worker.pid'));
+    return pid !== first && pid;
+  }, 'The daemon did not start a replacement worker.', 30000);
   await until(async () => (await call('inspect', id)).data?.state === 'running');
   assert.ok((await call('history')).data.some(op => op.action === 'wake' && op.projects.includes(id)));
   const shutdown = await call('sleep', id, '--detach');

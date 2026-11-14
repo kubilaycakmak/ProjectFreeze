@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
-import { checkpoint, composeTargets, containerAction, restore } from '../src/integrations.js';
+import { projectId } from '../src/discovery.js';
+import { Engine } from '../src/engine.js';
+import { composeTargets, containerAction } from '../src/integrations.js';
+import { Store } from '../src/store.js';
 
 const exec = promisify(execFile);
 const bin = fileURLToPath(new URL('../bin/projectfreeze.js', import.meta.url));
@@ -47,8 +50,7 @@ test('real Compose service identity, pause, sharing, and shutdown', {
   const projectName = `projectfreeze-test-${process.pid}`;
   const compose = (...args) => exec('docker', ['--host', 'unix:///var/run/docker.sock', 'compose', '--project-name', projectName, ...args], { cwd, timeout: 30000 });
   const service = { project: projectName, service: 'worker', shared: false };
-  const project = { id: 'fixture', cwd, recipe: { containers: [service] } };
-  let checkpointDir;
+  const project = { id: projectId(cwd), cwd, recipe: { containers: [service], timeout: 1000 }, state: 'running', members: [], excluded: [] };
   try {
     const network = process.env.PF_TEST_DOCKER_CHECKPOINT === '1' ? 'host' : 'none';
     await writeFile(join(cwd, 'compose.yaml'), `services:\n  worker:\n    image: busybox:1.37\n    command: ["sh", "-c", "trap 'exit 0' TERM; while true; do echo alive; sleep 0.2; done"]\n    restart: "no"\n    network_mode: ${network}\n`);
@@ -67,21 +69,32 @@ test('real Compose service identity, pause, sharing, and shutdown', {
     await containerAction('start', running.id);
     assert.equal((await composeTargets(project, [project]))[0].running, true);
     if (process.env.PF_TEST_DOCKER_CHECKPOINT === '1') {
-      const id = await checkpoint(cwd, project, undefined, 'docker', await composeTargets(project, [project]), () => {});
-      await containerAction('stop', running.id, 1000);
-      const root = (await exec('docker', ['info', '--format', '{{.DockerRootDir}}'])).stdout.trim();
-      checkpointDir = join(root, 'containers', running.id, 'checkpoints', id);
-      try { await restore(cwd, project, id, await composeTargets(project, [project]), () => {}); }
-      catch (error) {
-        if (process.env.GITHUB_ACTIONS === 'true') {
-          const direct = await exec('docker', ['inspect', '--format', '{{json .State}}', running.id]).catch(failure => failure);
-          const journal = await exec('journalctl', ['-u', 'docker', '--no-pager', '-n', '25']).catch(() => ({ stdout: '' }));
-          const logs = await exec('/usr/bin/find', [checkpointDir, '-name', '*.log', '-print', '-exec', 'tail', '-n', '15', '{}', ';']).catch(() => ({ stdout: '' }));
-          console.error(direct.stdout, direct.stderr, journal.stdout, logs.stdout);
-        }
-        throw error;
-      }
-      assert.equal((await composeTargets(project, [project]))[0].running, true);
+      const state = join(cwd, 'state');
+      await mkdir(state, { mode: 0o700 });
+      const store = new Store(state);
+      try {
+        store.save(project);
+        const engine = new Engine(store, state);
+        const operation = async (action, input) => {
+          const { id } = await engine.dispatch(action, { ids: [project.id], ...input });
+          while (engine.current) await delay(50);
+          const result = store.operation(id);
+          assert.equal(result.status, 'complete', JSON.stringify(result));
+          return result;
+        };
+        const capture = await operation('checkpoint', { backend: 'docker' });
+        const id = capture.outcomes.find(outcome => outcome.status === 'captured').target;
+        await operation('sleep', { force: true });
+        await operation('restore', { checkpoint: id });
+        assert.equal((await composeTargets(project, [project]))[0].running, true);
+        await engine.poll();
+        assert.equal(store.project(project.id).state, 'running');
+        await operation('reconcile');
+        assert.equal(store.project(project.id).state, 'running');
+        await containerAction('stop', running.id, 1000);
+        await engine.poll();
+        assert.equal(store.project(project.id).state, 'exited');
+      } finally { store.close(); }
     }
   } finally {
     await compose('unpause').catch(() => {});

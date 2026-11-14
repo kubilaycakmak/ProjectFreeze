@@ -15,6 +15,8 @@ const suspended = row => row.state === 'T';
 const stopped = row => row.state === 'Z' || row.state === 'X';
 const alive = (rows, target) => rows.find(row => matches(row, target) && !stopped(row));
 const visible = (rows, project) => rows.filter(row => !stopped(row) && project.members.some(target => matches(target, row)));
+const runningService = (containers, units) => containers.some(target => !target.shared && target.running) ||
+  units.some(unit => !unit.shared && !unit.timer && unit.state.ActiveState === 'active');
 const newProject = (id, cwd) => ({ id, cwd, name: basename(cwd), members: [], excluded: [], state: 'registered' });
 const changes = new Set(['adopt', 'run', 'freeze', 'resume', 'sleep', 'wake', 'checkpoint', 'restore', 'reconcile']);
 
@@ -302,7 +304,13 @@ export class Engine {
         catch { if (project.state === 'frozen') { project.state = 'partial'; this.store.save(project); } continue; }
         const live = visible(rows, project);
         if (!restart && await this.restartEligible(project, rows)) restart = project.id;
-        if (['running', 'adopted'].includes(project.state) && !live.length && !project.recipe?.supervisors?.length) project.state = 'exited';
+        if (['running', 'adopted'].includes(project.state) && !live.length && !project.recipe?.supervisors?.length) {
+          try {
+            const containers = await composeTargets(project, projects);
+            const units = await serviceTargets(project, projects);
+            if (!runningService(containers, units)) project.state = 'exited';
+          } catch { project.state = 'partial'; }
+        }
         if (project.state === 'frozen') {
           try {
             const units = await serviceTargets(project, projects);
@@ -727,6 +735,7 @@ export class Engine {
           units.every(u => u.shared || u.state.ActiveState !== 'active' || (u.state.FreezerState === 'frozen' && !u.timer));
         project.state = !project.uncertainEffect && project.state === 'frozen' && isFrozen ? 'frozen' : 'partial';
       } else if (live.length) project.state = project.root ? 'running' : 'adopted';
+      else if (runningService(containers, units)) project.state = 'running';
       else if (project.state !== 'sleeping') project.state = 'exited';
       this.record(job, project, project.id, project.state);
     }
