@@ -1,6 +1,7 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -33,17 +34,41 @@ const probe = () => { try { process.kill(pid, 0); return true; } catch { return 
 try {
   execFileSync(npm, npmArgs([...install, previousTarball ?? path]), { ...options, cwd: prefix });
   assert.equal(run(['list']).ok, true);
-  assert.equal(run(['daemon', 'status']).data.protocol, 1);
+  const daemon = run(['daemon', 'status']).data;
+  assert.equal(daemon.protocol, 1);
+  let legacy = false;
+  if (previous) {
+    try { run(['ports']); }
+    catch (error) {
+      assert.equal(JSON.parse(error.stdout).error.code, 'USAGE');
+      legacy = true;
+    }
+  }
+  const address = '127.0.0.1';
+  const port = await new Promise((resolvePort, reject) => {
+    const reservation = createServer();
+    reservation.once('error', reject);
+    reservation.listen(0, address, () => {
+      const { port } = reservation.address();
+      reservation.close(error => error ? reject(error) : resolvePort(port));
+    });
+  });
   const workload = join(base, 'worker.mjs');
   const recipe = join(base, 'recipe.json');
-  writeFileSync(workload, `import { existsSync } from 'node:fs'; setInterval(() => { if (existsSync(${JSON.stringify(finish)})) process.exit(0); }, 100);`);
-  writeFileSync(recipe, JSON.stringify({ cwd: base, argv: [process.execPath, workload],
+  writeFileSync(workload, `import { existsSync } from 'node:fs';
+import { createServer } from 'node:net';
+createServer(socket => socket.end()).listen(${port}, ${JSON.stringify(address)});
+setInterval(() => { if (existsSync(${JSON.stringify(finish)})) process.exit(0); }, 100);
+`);
+  writeFileSync(recipe, JSON.stringify({ cwd: base, argv: [process.execPath, workload], ready: { address, port },
     stop: [process.execPath, '-e', `require('node:fs').writeFileSync(${JSON.stringify(finish)}, '')`] }));
   ({ data: { projects: [id] } } = run(['run', '--recipe', recipe]));
   pid = run(['inspect', id]).data.processes[0].pid;
   assert.equal(probe(), true);
-  assert.equal(run(['daemon', 'stop']).ok, true);
-  await delay(500);
+  if (!legacy) {
+    assert.equal(run(['daemon', 'stop']).ok, true);
+    await delay(500);
+  }
   const interruptedDir = mkdtempSync(join(base, 'interrupted '));
   try {
     copyFileSync(path, join(interruptedDir, 'candidate.tgz'));
@@ -57,6 +82,12 @@ try {
   assert.equal(probe(), true);
   prefix = base;
   npmRun([...install, path]);
+  if (legacy) {
+    const ports = run(['ports']).data;
+    assert.ok(ports.some(row => row.protocol === 'tcp' && row.address === address && row.port === port && row.pid === pid));
+    assert.notEqual(run(['daemon', 'status']).data.pid, daemon.pid);
+    console.log('Verified port inventory replaces a legacy daemon and preserves the live listener.');
+  }
   assert.equal(run(['inspect', id]).data.processes[0].pid, pid);
   assert.equal(run(['daemon', 'stop']).ok, true);
   await delay(500);
