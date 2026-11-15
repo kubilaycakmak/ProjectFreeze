@@ -2,6 +2,8 @@
 
 Use Node.js 24.11.0 or later in the 24.x series, or Node.js 26.x, with npm and Git. Build the local helper before running tests. On Linux use a C compiler with Linux headers and the GNU libc development files. On macOS use Xcode Command Line Tools. An ordinary Windows build uses the in-box .NET Framework compiler. For reproducibility checks on Windows, point `PF_DOTNET_SDK` at an installed SDK directory containing Roslyn and use the same compiler version for both builds.
 
+The macOS helper keeps the Apple linker's hash-based build UUID. The Mach-O loader needs this field, and equivalent builds can still be compared byte for byte. See [Apple's build UUID technote](https://developer.apple.com/documentation/technotes/tn3178-checking-for-and-resolving-build-uuid-problems).
+
 ```sh
 npm run build:native
 npm test

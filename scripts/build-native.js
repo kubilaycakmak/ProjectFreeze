@@ -16,7 +16,7 @@ const args = windows ? [
   ...(sdk ? [roslyn, '/nostdlib+', '/deterministic+', '/pathmap:' + process.cwd() + '=/_/', ...['mscorlib', 'System', 'System.Core'].map(name => `/reference:${join(framework, `${name}.dll`)}`)] : []),
   '/nologo', '/optimize+', '/platform:anycpu', `/out:${output}`, 'native\\windows.cs'
 ] : ['-std=c11', '-Wall', '-Wextra', '-O2', '-ffile-prefix-map=' + process.cwd() + '=/_/',
-  ...(process.platform === 'darwin' ? ['-mmacosx-version-min=13.5', '-Wl,-no_uuid'] : []), '-o', output, `native/${process.platform}.c`];
+  ...(process.platform === 'darwin' ? ['-mmacosx-version-min=13.5'] : []), '-o', output, `native/${process.platform}.c`];
 const build = spawnSync(compiler, args, { stdio: 'inherit' });
 if (build.status !== 0) throw new Error(`Native build failed: ${build.error?.code ?? build.status}`);
 writeFileSync(`${output}.sha256`, `${createHash('sha256').update(readFileSync(output)).digest('hex')}  ${name}\n`);
