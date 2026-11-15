@@ -22,6 +22,8 @@ const same = (a, b) => validHex(a) && validHex(b) && timingSafeEqual(Buffer.from
 const recordPath = dir => join(dir, 'endpoint.json');
 const actions = new Set(['list', 'discover', 'inspect', 'listeners', 'ports', 'services', 'history', 'operation', 'cancel', 'adopt', 'run', 'freeze', 'resume',
   'sleep', 'kill', 'wake', 'checkpoint', 'restore', 'reconcile', 'daemon-status', 'daemon-stop']);
+const inventoryActions = new Set(['ports', 'services']);
+const unknownAction = 'Unknown action or invalid arguments.';
 
 export async function stateDirectory() {
   const dir = process.env.PROJECTFREEZE_HOME ?? (windows ? join(process.env.LOCALAPPDATA ?? homedir(), 'ProjectFreeze') : join(homedir(), '.projectfreeze'));
@@ -58,7 +60,7 @@ const line = value => `${JSON.stringify(value)}\n`;
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 
 function validate(action, input) {
-  if (!actions.has(action) || !object(input)) throw new Fault('USAGE', 'Unknown action or invalid arguments.');
+  if (!actions.has(action) || !object(input)) throw new Fault('USAGE', unknownAction);
   if (input.ids !== undefined && (!Array.isArray(input.ids) || input.ids.length > 32 || input.ids.some(id => typeof id !== 'string' || !/^p-[a-f0-9]{16}$/.test(id)))) {
     throw new Fault('USAGE', 'Project IDs must be an array of registered project identifiers.');
   }
@@ -168,10 +170,15 @@ export async function daemon() {
   process.once('SIGTERM', () => void shutdown());
 }
 
-async function connect(dir, action, input) {
+async function endpointRecord(dir) {
   const record = await readFile(recordPath(dir), 'utf8').then(JSON.parse).catch(() => null);
   if (!record || !validHex(record.secret)) throw new Fault('UNAVAILABLE', 'Local daemon is not running.');
   if (record.v !== protocol) throw new Fault('UNSUPPORTED', 'Local daemon protocol differs. Stop the old daemon and restart it.');
+  return record;
+}
+
+async function connect(dir, action, input, record) {
+  record ??= await endpointRecord(dir);
   const address = transport(record, dir);
   return new Promise((resolve, reject) => {
     const socket = createConnection(address);
@@ -206,6 +213,7 @@ async function connect(dir, action, input) {
 
 let cachedDir;
 let starting;
+let replacing;
 async function start(dir) {
   let running = false;
   for (let i = 0; i < 100; i++) {
@@ -224,6 +232,28 @@ async function start(dir) {
   throw new Fault('UNAVAILABLE', 'Daemon startup timed out. Run projectfreeze daemon foreground to inspect the startup error.');
 }
 
+async function replaceLegacyDaemon(dir, record) {
+  try {
+    // Use the endpoint that rejected the action so a concurrent client cannot stop its replacement.
+    await connect(dir, 'daemon-stop', {}, record);
+  } catch (error) {
+    if (error.code === 'BUSY') throw new Fault('BUSY', 'The daemon needs an update for this view. Wait for its current operation to finish and retry.');
+    if (error.code !== 'UNAVAILABLE') throw error;
+  }
+  await start(dir);
+}
+
+async function connectForAction(dir, action, input) {
+  if (!inventoryActions.has(action)) return connect(dir, action, input);
+  const record = await endpointRecord(dir);
+  try { return await connect(dir, action, input, record); }
+  catch (error) {
+    if (!object(input) || error.code !== 'USAGE' || error.message !== unknownAction) throw error;
+    await (replacing ??= replaceLegacyDaemon(dir, record).finally(() => { replacing = undefined; }));
+    return connect(dir, action, input);
+  }
+}
+
 export async function request(action, input = {}, autoStart = true) {
   const dir = await (cachedDir ??= stateDirectory());
   if (action === 'daemon-start') {
@@ -233,7 +263,7 @@ export async function request(action, input = {}, autoStart = true) {
   }
   if (!autoStart) return connect(dir, action, input);
   if (['list', 'discover', 'inspect', 'listeners', 'ports', 'services', 'history', 'operation'].includes(action)) {
-    try { return await connect(dir, action, input); }
+    try { return await connectForAction(dir, action, input); }
     catch (error) { if (error.code !== 'UNAVAILABLE') throw error; }
   }
   try { await connect(dir, 'daemon-status', {}); }
@@ -241,7 +271,7 @@ export async function request(action, input = {}, autoStart = true) {
     if (error.code !== 'UNAVAILABLE') throw error;
     await (starting ??= start(dir).finally(() => { starting = undefined; }));
   }
-  return connect(dir, action, input);
+  return connectForAction(dir, action, input);
 }
 
 export async function waitOperation(id, onProgress = () => {}, signal) {

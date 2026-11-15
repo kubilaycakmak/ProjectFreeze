@@ -31,6 +31,8 @@ One canonical directory can hold several durable projects with named recipe inst
 
 Daemon restart preserves workloads and state. Native launch supervisors persist exit receipts independently of the daemon. The `on-failure` policy consumes a recorded nonzero exit on the same boot and stops after three restart attempts. A missing receipt or a changed boot identity requires review. A package upgrade should stop the daemon, install the verified package, and start it against the same state directory. Keep recoverable metadata and the old package until reconciliation succeeds. Windows launches use a hash-addressed helper copy inside private state so an active launch supervisor cannot lock the installed npm package during removal.
 
+Ports and Services automatically replace an idle older daemon if it does not support the requested inventory command. If an operation is running, let it finish and reopen the view. The older `listeners` command works with the replacement daemon.
+
 When upgrading on Windows from `0.1.0-dev.0`, install the new tarball in a separate npm prefix while old workloads are alive. The old launcher can hold its installed executable open. Stop the old daemon, invoke the new installation with the same `PROJECTFREEZE_HOME`, and verify that `inspect` sees the original workload. Remove the old installation after its workloads exit and the launcher releases its executable.
 
 ## Checkpoints
