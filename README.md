@@ -1,6 +1,6 @@
 # ProjectFreeze
 
-ProjectFreeze discovers and manages developer workloads on the local machine. Open the terminal interface with `projectfreeze`, use versioned JSON from scripts, or connect an MCP client over stdio. The daemon runs under your account and keeps ownership and operation history in a private SQLite database.
+ProjectFreeze is a free, open-source tool for discovering and managing developer workloads on your computer. Open the terminal interface with `projectfreeze`, use versioned JSON from scripts, or connect an MCP client over stdio. The daemon runs under your account and keeps ownership and operation history in a private SQLite database.
 
 ## Quick start
 
@@ -8,7 +8,9 @@ ProjectFreeze discovers and manages developer workloads on the local machine. Op
 npx @kubilaycakmak/projectfreeze@next
 ```
 
-Run this in an interactive terminal to launch the current prerelease directly from npm. On first use, accept the npm installation prompt if it appears. If PowerShell blocks the `npx.ps1` shim, run `npx.cmd @kubilaycakmak/projectfreeze@next`.
+Run this in an interactive terminal to download and open the current npm prerelease. Confirm the npm installation prompt if it appears. If PowerShell blocks the `npx.ps1` shim, run `npx.cmd @kubilaycakmak/projectfreeze@next`.
+
+Freeze, Sleep, and Force Terminate can interrupt running work. Save your work and review the selected processes before using these controls. See [License and liability](#license-and-liability).
 
 ## Requirements
 
@@ -44,4 +46,6 @@ The development build adds Ports and Services views and a two-step `k` force-ter
 - [Architecture, security, and recovery](docs/operations.md)
 - [Development, verification, and packaging](CONTRIBUTING.md)
 
-MIT licensed. See [LICENSE](LICENSE).
+## License and liability
+
+ProjectFreeze is provided “as is” under the MIT License, without warranties. Use it at your own risk. The authors and copyright holders disclaim liability for claims, damages, or other losses arising from the software or its use to the extent permitted by applicable law. See the [MIT License](LICENSE) for the full terms.
